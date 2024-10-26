@@ -33,7 +33,9 @@ parser = { git = "https://github.com/olomix/circom.git", branch = "master" }
 type_analysis = { git = "https://github.com/olomix/circom.git", branch = "master" }
 constraint_generation = { git = "https://github.com/olomix/circom.git", branch = "master" }
 prost = "0.13.1"
-num-bigint = "0.4.6"
+num-bigint = { version = "=0.4.3", default-features = false, features = [
+    "rand",
+] }
 
 
 [profile.release]

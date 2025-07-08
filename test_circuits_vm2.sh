@@ -83,7 +83,9 @@ for arg in "${library_paths[@]}"; do
 done
 
 pushd "${script_dir}" > /dev/null
-cargo build --release
+# to build with debug vm2 execution, run:
+cargo build --release --features "debug_vm2"
+# cargo build --release
 popd > /dev/null
 
 function test_circuit() {

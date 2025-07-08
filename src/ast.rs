@@ -299,6 +299,8 @@ pub enum FfExpr {
     FfSub(Box<FfExpr>, Box<FfExpr>),
     FfEq(Box<FfExpr>, Box<FfExpr>),
     FfEqz(Box<FfExpr>),
+    FfShr(Box<FfExpr>, Box<FfExpr>),
+    FfBand(Box<FfExpr>, Box<FfExpr>),
     Lt(Box<FfExpr>, Box<FfExpr>),
     Variable(String),
     Literal(BigUint),

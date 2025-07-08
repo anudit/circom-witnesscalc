@@ -503,6 +503,10 @@ fn parse_ff_expression(input: &mut &str) -> ModalResult<FfExpr> {
             "ff.load" => preceded(space1, parse_i64_operand).map(FfExpr::Load),
             "ff.lt" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
                 .map(|(op1, op2)| FfExpr::Lt(Box::new(op1), Box::new(op2))),
+            "ff.shr" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
+                .map(|(op1, op2)| FfExpr::FfShr(Box::new(op1), Box::new(op2))),
+            "ff.band" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
+                .map(|(op1, op2)| FfExpr::FfBand(Box::new(op1), Box::new(op2))),
             _ => fail::<_, FfExpr, _>,
         },
         // Try to parse as a literal

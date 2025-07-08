@@ -55,7 +55,7 @@ template Pos(nInputs) {
     signal output d;
 
     var t = nInputs + 1;
-	var x[2][2] = [[1, 2], [3, 4]];
+	var x[2][2] = [[100501, 100502], [100503, 100504]];
 	var C[3][3] = f1(t, x);
 
 	c <== a * C[0][0] * b;

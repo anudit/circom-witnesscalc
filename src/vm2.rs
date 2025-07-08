@@ -109,6 +109,16 @@ pub enum OpCode {
     // stack_ff:0 contains the field element
     // Result pushed to stack_i64
     I64WrapFf            = 33,
+    // Field shift right (ff.shr)
+    // stack_ff:0 contains right operand (shift amount)
+    // stack_ff:-1 contains left operand (value to shift)
+    // Result pushed to stack_ff
+    OpShr                = 34,
+    // Field bitwise AND (ff.band)
+    // stack_ff:0 contains right operand
+    // stack_ff:-1 contains left operand
+    // Result pushed to stack_ff
+    OpBand               = 35,
 }
 
 pub struct Component {
@@ -246,6 +256,12 @@ impl<T: FieldOps> VM<T> {
     fn pop_ff(&mut self) -> Result<T, RuntimeError> {
         self.stack_ff.pop().ok_or(RuntimeError::StackUnderflow)?
             .ok_or(RuntimeError::StackVariableIsNotSet)
+    }
+
+    #[cfg(feature = "debug_vm2")]
+    fn peek_ff(&self) -> Result<T, RuntimeError> {
+        self.stack_ff.last().and_then(|v| v.as_ref())
+            .cloned().ok_or(RuntimeError::StackUnderflow)
     }
 
     fn push_i64(&mut self, value: i64) {
@@ -772,6 +788,12 @@ where
         OpCode::I64WrapFf => {
             output.push_str("I64WrapFf");
         }
+        OpCode::OpShr => {
+            output.push_str("OpShr");
+        }
+        OpCode::OpBand => {
+            output.push_str("OpBand");
+        }
     }
 
     (ip, output)
@@ -880,12 +902,28 @@ where
                 (var_idx, ip) = usize_from_code(&current_template.code, ip)?;
                 let value = vm.pop_ff()?;
                 vm.stack_ff[vm.stack_base_pointer_ff + var_idx] = Some(value);
+                #[cfg(feature = "debug_vm2")]
+                {
+                    let var_name = current_template.ff_variable_names
+                        .get(&var_idx)
+                        .map(|s| format!(" ({})", s))
+                        .unwrap_or_default();
+                    println!("StoreVariableFf: {}{} = {}", var_idx, var_name, vm.stack_ff[vm.stack_base_pointer_ff + var_idx].unwrap());
+                }
             }
             OpCode::StoreVariableI64 => {
                 let var_idx: usize;
                 (var_idx, ip) = usize_from_code(&current_template.code, ip)?;
                 let value = vm.pop_i64()?;
                 vm.stack_i64[vm.stack_base_pointer_i64 + var_idx] = Some(value);
+                #[cfg(feature = "debug_vm2")]
+                {
+                    let var_name = current_template.i64_variable_names
+                        .get(&var_idx)
+                        .map(|s| format!(" ({})", s))
+                        .unwrap_or_default();
+                    println!("StoreVariableI64: {}{} = {}", var_idx, var_name, vm.stack_i64[vm.stack_base_pointer_i64 + var_idx].unwrap());
+                }
             }
             OpCode::LoadVariableI64 => {
                 let var_idx: usize;
@@ -1158,6 +1196,10 @@ where
                 }
                 let value = vm.pop_ff()?;
                 vm.memory_ff[addr] = Some(value);
+                #[cfg(feature = "debug_vm2")]
+                {
+                    println!("FfStore: [{}] = {}", addr, vm.memory_ff[addr].unwrap());
+                }
             }
             OpCode::FfLoad => {
                 let addr: usize = vm.pop_i64()?.try_into()
@@ -1186,9 +1228,15 @@ where
                 vm.push_i64(*value);
             }
             OpCode::OpLt => {
-                let rhs = vm.pop_ff()?;
                 let lhs = vm.pop_ff()?;
+                let rhs = vm.pop_ff()?;
+                // let rhs = vm.pop_ff()?;
+                // let lhs = vm.pop_ff()?;
                 let result = ff.lt(lhs, rhs);
+                #[cfg(feature = "debug_vm2")]
+                {
+                    println!("OpLt: {} < {} = {}", lhs, rhs, result);
+                }
                 vm.push_ff(result);
             }
             OpCode::OpI64Mul => {
@@ -1209,6 +1257,20 @@ where
                 let i64_bytes: [u8; 8] = bytes[0..8].try_into().unwrap();
                 let i64_val = i64::from_le_bytes(i64_bytes);
                 vm.push_i64(i64_val);
+            }
+            OpCode::OpShr => {
+                let lhs = vm.pop_ff()?;
+                let rhs = vm.pop_ff()?;
+                vm.push_ff(ff.shr(lhs, rhs));
+                #[cfg(feature = "debug_vm2")]
+                {
+                    println!("OpShr: {} >> {} = {}", lhs, rhs, vm.peek_ff()?);
+                }
+            }
+            OpCode::OpBand => {
+                let lhs = vm.pop_ff()?;
+                let rhs = vm.pop_ff()?;
+                vm.push_ff(ff.band(lhs, rhs));
             }
         }
     }

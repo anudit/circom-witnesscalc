@@ -327,6 +327,28 @@ pub enum Signal {
     Bus(String, Vec<usize>), // bus name and dimensions
 }
 
+
+#[cfg_attr(test, derive(PartialEq, Debug))]
+pub enum TypeFieldKind {
+    Ff,
+    Bus(String),
+}
+
+#[cfg_attr(test, derive(PartialEq, Debug))]
+pub struct TypeField {
+    pub name: String,
+    pub kind: TypeFieldKind,
+    pub offset: usize,
+    pub size: usize,
+    pub dims: Vec<usize>,
+}
+
+#[cfg_attr(test, derive(PartialEq, Debug))]
+pub struct Type {
+    pub name: String,
+    pub fields: Vec<TypeField>,
+}
+
 #[cfg_attr(test, derive(PartialEq, Debug))]
 pub enum ComponentsMode {
     Implicit,
@@ -341,6 +363,7 @@ pub struct AST {
     pub start: String,
     pub components_mode: ComponentsMode,
     pub witness: Vec<usize>,
+    pub types: Vec<Type>,
     pub functions: Vec<Function>,
     pub templates: Vec<Template>,
 }

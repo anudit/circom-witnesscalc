@@ -6,7 +6,7 @@ use winnow::combinator::{alt, preceded, repeat, terminated, seq, dispatch, fail,
 use winnow::Parser;
 use winnow::token::{literal, take_till, take_while};
 use winnow::stream::Stream;
-use crate::ast::{CallArgument, ComponentsMode, Expr, FfExpr, I64Expr, I64Operand, Signal, Statement, Template, AST, Function};
+use crate::ast::{CallArgument, ComponentsMode, Expr, FfExpr, I64Expr, I64Operand, Signal, Statement, Template, AST, Function, Type, TypeField, TypeFieldKind};
 
 fn parse_prime(input: &mut &str) -> ModalResult<BigUint> {
     let (bi, ): (BigUint, ) = seq!(
@@ -110,6 +110,86 @@ fn parse_witness_list(input: &mut &str) -> ModalResult<Vec<usize>> {
     Ok(s)
 }
 
+fn parse_type_field(input: &mut &str) -> ModalResult<TypeField> {
+    let (name, kind_str, offset, size, dims_count): (&str, &str, usize, usize, usize) = seq!(
+        _: space1,
+        parse_type_name,
+        _: space1,
+        parse_type_name,
+        _: space1,
+        parse_usize,
+        _: space1,
+        parse_usize,
+        _: space1,
+        parse_usize,
+    ).parse_next(input)?;
+    
+    // Parse optional dimensions
+    let mut dims = Vec::new();
+    for _ in 0..dims_count {
+        let _: &str = space1.parse_next(input)?;
+        let dim: usize = parse_usize.parse_next(input)?;
+        dims.push(dim);
+    }
+    
+    let kind = if kind_str == "$ff" {
+        TypeFieldKind::Ff
+    } else {
+        // Remove the $ prefix from bus names
+        TypeFieldKind::Bus(kind_str.strip_prefix('$').unwrap_or(kind_str).to_string())
+    };
+    
+    Ok(TypeField {
+        name: name.strip_prefix('$').unwrap_or(name).to_string(),
+        kind,
+        offset,
+        size,
+        dims,
+    })
+}
+
+fn parse_type(input: &mut &str) -> ModalResult<Type> {
+    let (name, ): (&str, ) = seq!(
+        _: ("%%type", space1),
+        parse_type_name,
+        _: (
+            space0,
+            opt(parse_eol_comment),
+            cut_err(line_ending).context(StrContext::Expected(StrContextValue::CharLiteral('\n')))
+        )
+    ).parse_next(input)?;
+    
+    let mut fields = Vec::new();
+    
+    // Parse fields until we hit another directive or EOF
+    loop {
+        // Check if next line starts with %% or is EOF
+        let checkpoint = input.checkpoint();
+        repeat::<_, _, (), _, _>(0.., parse_empty_line).parse_next(input)?;
+        
+        if input.is_empty() || input.starts_with("%%") {
+            input.reset(&checkpoint);
+            break;
+        }
+        
+        // Parse field
+        let field = parse_type_field(input)?;
+        fields.push(field);
+        
+        // Consume rest of line
+        let _: () = seq!(
+            _: space0,
+            _: opt(parse_eol_comment),
+            _: line_ending,
+        ).parse_next(input)?;
+    }
+    
+    Ok(Type {
+        name: name.strip_prefix('$').unwrap_or(name).to_string(),
+        fields,
+    })
+}
+
 fn parse_i64_literal(input: &mut &str) -> ModalResult<i64> {
     preceded(
         literal("i64."),
@@ -184,6 +264,22 @@ fn parse_variable_name<'s>(input: &mut &'s str) -> ModalResult<&'s str> {
                 })
                 .parse_next(i)?;
             Ok(var_name)
+        }
+    ).parse_next(input)
+}
+
+fn parse_type_name<'s>(input: &mut &'s str) -> ModalResult<&'s str> {
+    trace(
+        "parse_type_name",
+        |i: &mut _| {
+            let type_name = take_while(1..,
+                       |c: char| c.is_alphabetic() || c.is_numeric() || c == '_' || c == '$')
+                .verify(|v: &str| {
+                    let c = v.chars().next().unwrap();
+                    c.is_alphabetic() || c == '_' || c == '$'
+                })
+                .parse_next(i)?;
+            Ok(type_name)
         }
     ).parse_next(input)
 }
@@ -706,6 +802,8 @@ fn parse_ast(i: &mut &str) -> ModalResult<AST> {
         _: repeat::<_, _, (), _, _>(0.., parse_empty_line),
         components_heap: parse_components_heap
             .context(StrContext::Expected(StrContextValue::StringLiteral("%%components_heap"))),
+        _: repeat::<_, _, (), _, _>(0.., parse_empty_line),
+        types: repeat(0.., parse_type),
         _: repeat::<_, _, (), _, _>(0.., parse_empty_line),
         start: parse_start_template
             .context(StrContext::Expected(StrContextValue::StringLiteral("%%start"))),
@@ -1403,6 +1501,7 @@ x_1 = get_signal i64.2
             start: "Multiplier_0".to_string(),
             components_mode: ComponentsMode::Explicit,
             witness: vec![0, 1, 2, 3],
+            types: vec![],
             functions: vec![],
             templates: vec![
                 Template {
@@ -1492,6 +1591,7 @@ x_1 = get_signal i64.2
             start: "Multiplier_0".to_string(),
             components_mode: ComponentsMode::Explicit,
             witness: vec![0, 1, 2, 3],
+            types: vec![],
             functions: vec![
                 Function {
                     name: "f1_0".to_string(),
@@ -1545,6 +1645,147 @@ x_1 = get_signal i64.2
                 panic!();
             }
         }
+    }
+    
+    #[test]
+    fn test_parse_type() {
+        let mut input = "%%type $bus_0
+       $x $ff 0 1 0
+       $y $ff 1 1 0
+%%start";
+        let result = parse_type.parse_next(&mut input);
+        if let Err(e) = &result {
+            println!("Parse error: {}", e);
+        }
+        let parsed_type = result.unwrap();
+        let want = Type {
+            name: "bus_0".to_string(),
+            fields: vec![
+                TypeField {
+                    name: "x".to_string(),
+                    kind: TypeFieldKind::Ff,
+                    offset: 0,
+                    size: 1,
+                    dims: vec![],
+                },
+                TypeField {
+                    name: "y".to_string(),
+                    kind: TypeFieldKind::Ff,
+                    offset: 1,
+                    size: 1,
+                    dims: vec![],
+                },
+            ],
+        };
+        assert_eq!(parsed_type, want);
+    }
+    
+    #[test]
+    fn test_parse_ast_with_types() {
+        let input = ";; Prime value
+%%prime 21888242871839275222246405745257275088548364400416034343698204186575808495617
+;; Memory of signals
+%%signals 4
+;; Heap of components
+%%components_heap 3
+%%type $bus_0
+       $x $ff 0 1 0
+       $y $ff 1 1 0
+%%type $bus_1
+       $start $bus_0 0 2 0
+       $end $bus_0 2 2 0
+%%type $bus_2
+       $v $bus_1 0 4 1  2
+;; Main template
+%%start Multiplier_0
+;; Component creation mode (implicit/explicit)
+%%components explicit
+;; Witness (signal list)
+%%witness 0 1 2 3
+%%template Multiplier_0 [ ff 0  ff 0 ] [ ff 0 ] [3] [ ]
+;; store bucket. Line 15
+x_0 = get_signal i64.1
+;; end of load bucket
+x_1 = get_signal i64.2
+";
+        let want = AST {
+            prime: BigUint::from_str_radix(
+                "21888242871839275222246405745257275088548364400416034343698204186575808495617",
+                10).unwrap(),
+            signals: 4,
+            components_heap: 3,
+            start: "Multiplier_0".to_string(),
+            components_mode: ComponentsMode::Explicit,
+            witness: vec![0, 1, 2, 3],
+            types: vec![
+                Type {
+                    name: "bus_0".to_string(),
+                    fields: vec![
+                        TypeField {
+                            name: "x".to_string(),
+                            kind: TypeFieldKind::Ff,
+                            offset: 0,
+                            size: 1,
+                            dims: vec![],
+                        },
+                        TypeField {
+                            name: "y".to_string(),
+                            kind: TypeFieldKind::Ff,
+                            offset: 1,
+                            size: 1,
+                            dims: vec![],
+                        },
+                    ],
+                },
+                Type {
+                    name: "bus_1".to_string(),
+                    fields: vec![
+                        TypeField {
+                            name: "start".to_string(),
+                            kind: TypeFieldKind::Bus("bus_0".to_string()),
+                            offset: 0,
+                            size: 2,
+                            dims: vec![],
+                        },
+                        TypeField {
+                            name: "end".to_string(),
+                            kind: TypeFieldKind::Bus("bus_0".to_string()),
+                            offset: 2,
+                            size: 2,
+                            dims: vec![],
+                        },
+                    ],
+                },
+                Type {
+                    name: "bus_2".to_string(),
+                    fields: vec![
+                        TypeField {
+                            name: "v".to_string(),
+                            kind: TypeFieldKind::Bus("bus_1".to_string()),
+                            offset: 0,
+                            size: 4,
+                            dims: vec![2],
+                        },
+                    ],
+                },
+            ],
+            functions: vec![],
+            templates: vec![
+                Template {
+                    name: "Multiplier_0".to_string(),
+                    outputs: vec![Signal::Ff(vec![]), Signal::Ff(vec![])],
+                    inputs: vec![Signal::Ff(vec![])],
+                    signals_num: 3,
+                    components: vec![],
+                    body: vec![
+                        assign("x_0", &get_signal("1")),
+                        assign("x_1", &get_signal("2")),
+                    ],
+                },
+            ],
+        };
+        let tmpl_header = consume_parse_result(parse_ast.parse(input));
+        assert_eq!(want, tmpl_header);
     }
 
     #[test]

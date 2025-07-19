@@ -135,7 +135,7 @@ pub struct Circuit<T: FieldOps> {
     pub function_registry: HashMap<String, usize>, // Function name -> index mapping
     pub field: Field<T>,
     pub witness: Vec<usize>,
-    pub input_signals_info: HashMap<String, usize>,
+    pub input_signals_info: HashMap<String, usize>, // TODO: maybe remove
     pub signals_num: usize,
 }
 

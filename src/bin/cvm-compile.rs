@@ -38,7 +38,15 @@ enum CompilationError {
     #[error("jump offset is too large")]
     JumpOffsetIsTooLarge,
     #[error("[assertion] Loop control stack is empty")]
-    LoopControlJumpsEmpty
+    LoopControlJumpsEmpty,
+    #[error("Bus type `{0}` not found in type definitions")]
+    BusTypeNotFound(String),
+    #[error("Signal at index {0} not found in sym file")]
+    SignalNotFoundInSym(usize),
+    #[error("Signal '{0}' does not start with expected component prefix '{1}'")]
+    SignalPrefixMismatch(String, String),
+    #[error("Invalid array index in signal name '{0}': expected [0] but found '{1}'")]
+    InvalidArrayIndex(String, String),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -155,8 +163,11 @@ fn main() {
         disassemble::<U254>(&circuit.templates);
         disassemble::<U254>(&circuit.functions);
         if args.want_wtns.is_some() {
+            let sym_content = fs::read_to_string(&args.sym_file).unwrap();
+            let main_template = &program.templates[circuit.main_template_id];
             calculate_witness(
-                &circuit, &mut component_tree, args.want_wtns.unwrap())
+                &circuit, &mut component_tree, args.want_wtns.unwrap(),
+                &sym_content, main_template, &program.types)
                 .unwrap();
         }
     } else {
@@ -241,11 +252,13 @@ fn build_component_tree(
 
 fn calculate_witness<T: FieldOps>(
     circuit: &Circuit<T>, component_tree: &mut Component,
-    want_wtns: WantWtns) -> Result<(), Box<dyn Error>> {
+    want_wtns: WantWtns, sym_content: &str, main_template: &ast::Template,
+    types: &[ast::Type]) -> Result<(), Box<dyn Error>> {
 
+    let input_infos = build_input_info_from_sym(sym_content, circuit.main_template_id, main_template, types)?;
     let mut signals = init_signals(
         &want_wtns.inputs_file, circuit.signals_num, &circuit.field,
-        &circuit.input_signals_info)?;
+        types, &input_infos)?;
     execute(circuit, &mut signals, &circuit.field, component_tree)?;
     let wtns_data = witness(
         &signals, &circuit.witness, circuit.field.prime)?;
@@ -264,7 +277,7 @@ where
 
     let v: serde_json::Value = serde_json::from_slice(inputs_data)?;
     let mut records: HashMap<String, T> = HashMap::new();
-    visit_inputs_json("main", &v, &mut records, ff)?;
+    visit_inputs_json("", &v, &mut records, ff)?;
     Ok(records)
 }
 
@@ -280,6 +293,11 @@ where
                 format!("unexpected null value at path {}", prefix)))),
         serde_json::Value::Bool(b) => {
             let b = if *b { T::one() } else { T::zero() };
+            if prefix.is_empty() {
+                return Err(Box::new(
+                    RuntimeError::InvalidSignalsJson(
+                        "boolean value cannot be at the root".to_string())));
+            }
             records.insert(prefix.to_string(), b);
         },
         serde_json::Value::Number(n) => {
@@ -293,12 +311,27 @@ where
                 return Err(Box::new(RuntimeError::InvalidSignalsJson(
                     format!("invalid number at path {}: {}", prefix, n))));
             };
+            if prefix.is_empty() {
+                return Err(Box::new(
+                    RuntimeError::InvalidSignalsJson(
+                        "number value cannot be at the root".to_string())));
+            }
             records.insert(prefix.to_string(), v);
         },
         serde_json::Value::String(s) => {
+            if prefix.is_empty() {
+                return Err(Box::new(
+                    RuntimeError::InvalidSignalsJson(
+                        "string value cannot be at the root".to_string())));
+            }
             records.insert(prefix.to_string(), ff.parse_str(s)?);
         },
         serde_json::Value::Array(vs) => {
+            if prefix.is_empty() {
+                return Err(Box::new(
+                    RuntimeError::InvalidSignalsJson(
+                        "array value cannot be at the root".to_string())));
+            }
             for (i, v) in vs.iter().enumerate() {
                 let new_prefix = format!("{}[{}]", prefix, i);
                 visit_inputs_json(&new_prefix, v, records, ff)?;
@@ -306,7 +339,11 @@ where
         },
         serde_json::Value::Object(o) => {
             for (k, v) in o.iter() {
-                let new_prefix = prefix.to_string() + "." + k;
+                let new_prefix = if prefix.is_empty() {
+                    k.to_string()
+                } else {
+                    format!("{}.{}", prefix, k)
+                };
                 visit_inputs_json(&new_prefix, v, records, ff)?;
             }
         },
@@ -315,33 +352,406 @@ where
     Ok(())
 }
 
+#[derive(Debug, Clone, PartialEq)]
+struct InputInfo {
+    name: String,
+    offset: usize,
+    lengths: Vec<usize>,
+    type_id: Option<String>,
+}
+
+
+#[derive(Debug)]
+struct SymEntry {
+    signal_idx: usize,
+    signal_name: String,
+}
+
+fn parse_sym_file(sym_content: &str, main_template_id: usize) -> Result<Vec<SymEntry>, Box<dyn Error>> {
+    let mut entries = Vec::new();
+
+    for line in sym_content.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let parts: Vec<&str> = line.split(',').collect();
+        if parts.len() != 4 {
+            return Err(Box::new(CompilationError::IncorrectSymFileFormat(
+                format!("line should consist of 4 values: {}", line))));
+        }
+
+        let signal_idx = parts[0].parse::<usize>()
+            .map_err(|e| Box::new(CompilationError::IncorrectSymFileFormat(
+                format!("signal_idx should be a number: {}", e))))?;
+
+        let template_id = parts[2].parse::<usize>()
+            .map_err(|e| Box::new(CompilationError::IncorrectSymFileFormat(
+                format!("template_id should be a number: {}", e))))?;
+
+        if template_id != main_template_id {
+            continue; // Only include entries for the main template
+        }
+
+        let signal_name = parts[3].to_string();
+
+        entries.push(SymEntry {
+            signal_idx,
+            signal_name,
+        });
+    }
+
+    Ok(entries)
+}
+
+/// Parse a signal name to extract the base name and validate array index
+fn parse_signal_name(name_part: &str) -> Result<String, CompilationError> {
+    // Check if there's a bracket in the name
+    if let Some(bracket_idx) = name_part.find('[') {
+        let before_bracket = &name_part[..bracket_idx];
+        let after_bracket = &name_part[bracket_idx..];
+
+        // Validate that the array index is [0]
+        if !after_bracket.starts_with("[0]") {
+            // Extract the actual bracket content for the error message
+            let closing_bracket = after_bracket.find(']').unwrap_or(after_bracket.len());
+            let bracket_content = &after_bracket[..closing_bracket + 1.min(after_bracket.len())];
+            return Err(CompilationError::InvalidArrayIndex(
+                name_part.to_string(),
+                bracket_content.to_string(),
+            ));
+        }
+
+        Ok(extract_base_name(before_bracket))
+    } else {
+        // No bracket - just extract base name before any dots
+        Ok(extract_base_name(name_part))
+    }
+}
+
+/// Extract the base name before the first dot (if any)
+fn extract_base_name(name: &str) -> String {
+    name.split('.').next().unwrap_or(name).to_string()
+}
+
+fn build_input_info_from_sym(
+    sym_content: &str,
+    main_template_id: usize,
+    main_template: &ast::Template,
+    types: &[ast::Type],
+) -> Result<Vec<InputInfo>, Box<dyn Error>> {
+    let sym_entries = parse_sym_file(sym_content, main_template_id)?;
+
+    let component_name_prefix = extract_component_prefix(&sym_entries)?;
+
+    // Calculate the number of output signals to skip
+    let outputs_count = calculate_outputs_count(&main_template.outputs, types)?;
+
+    let mut input_infos = Vec::new();
+    let mut current_offset = outputs_count + 1; // signal #0 is always 1
+
+    // Process each input signal
+    for input in &main_template.inputs {
+        // Find the signal entry at the current offset
+        let entry = find_signal_entry(&sym_entries, current_offset)?;
+
+        // Verify signal starts with expected component prefix
+        if !entry.signal_name.starts_with(&component_name_prefix) {
+            return Err(Box::new(CompilationError::SignalPrefixMismatch(
+                entry.signal_name.clone(),
+                component_name_prefix.clone(),
+            )));
+        }
+
+        let name_part = &entry.signal_name[component_name_prefix.len()..];
+        let base_name = parse_signal_name(name_part)?;
+
+        let lengths = match input {
+            ast::Signal::Ff(dims) => dims.to_vec(),
+            ast::Signal::Bus(_, dims) => dims.to_vec(),
+        };
+
+        // Create the input info
+        input_infos.push(InputInfo {
+            name: base_name,
+            offset: current_offset,
+            lengths,
+            type_id: match input {
+                ast::Signal::Ff(_) => None,
+                ast::Signal::Bus(bus_type, _) => Some(bus_type.clone()),
+            },
+        });
+
+        // Calculate signal size and advance offset
+        current_offset += calculate_signal_size(input, types)?;
+    }
+
+    Ok(input_infos)
+}
+
+/// Extract component prefix from the first sym entry
+fn extract_component_prefix(sym_entries: &[SymEntry]) -> Result<String, Box<dyn Error>> {
+    let first_entry = sym_entries.first()
+        .ok_or_else(|| Box::new(CompilationError::IncorrectSymFileFormat(
+            "No sym entries found for main template".to_string())))?;
+
+    let signal_name = &first_entry.signal_name;
+    let dot_idx = signal_name.find('.')
+        .ok_or_else(|| Box::new(CompilationError::IncorrectSymFileFormat(
+            format!("Expected signal name with component prefix, got: {}", signal_name))))?;
+
+    Ok(format!("{}.", &signal_name[..dot_idx]))
+}
+
+/// Calculate total number of output signals
+fn calculate_outputs_count(outputs: &[ast::Signal], types: &[ast::Type]) -> Result<usize, Box<dyn Error>> {
+    let mut count = 0;
+    for signal in outputs {
+        count += calculate_signal_size(signal, types)?;
+    }
+    Ok(count)
+}
+
+/// Calculate the size of a signal (number of elements)
+fn calculate_signal_size(signal: &ast::Signal, types: &[ast::Type]) -> Result<usize, Box<dyn Error>> {
+    match signal {
+        ast::Signal::Ff(dims) => {
+            Ok(if dims.is_empty() { 1 } else { dims.iter().product() })
+        }
+        ast::Signal::Bus(bus_type, dims) => {
+            let type_def = types.iter().find(|t| t.name == *bus_type)
+                .ok_or_else(|| Box::new(CompilationError::BusTypeNotFound(bus_type.clone())))?;
+            let base_size = calculate_bus_size(type_def, types);
+            Ok(if dims.is_empty() { base_size } else { base_size * dims.iter().product::<usize>() })
+        }
+    }
+}
+
+/// Find signal entry at specific index
+fn find_signal_entry(sym_entries: &[SymEntry], signal_idx: usize) -> Result<&SymEntry, Box<dyn Error>> {
+    sym_entries.iter()
+        .find(|e| e.signal_idx == signal_idx)
+        .ok_or_else(|| Box::new(CompilationError::SignalNotFoundInSym(signal_idx)) as Box<dyn Error>)
+}
+
+
+fn calculate_bus_size(bus_type: &ast::Type, _all_types: &[ast::Type]) -> usize {
+    let mut total_size = 0;
+
+    for field in &bus_type.fields {
+        // The size field already contains the total size for this field
+        total_size += field.size;
+    }
+
+    total_size
+}
+
+/// Expand an InputInfo into all its constituent signal paths with their indices
+fn expand_input_info_to_signal_paths(
+    input_info: &InputInfo,
+    types: &[ast::Type]
+) -> Result<Vec<(String, usize)>, Box<dyn Error>> {
+    let mut paths = Vec::new();
+    let mut current_offset = input_info.offset;
+
+    if let Some(type_id) = &input_info.type_id {
+        // This is a bus type - expand it recursively
+        let bus_type = types.iter().find(|t| t.name == *type_id)
+            .ok_or_else(|| Box::new(CompilationError::BusTypeNotFound(type_id.clone())))?;
+
+        if input_info.lengths.is_empty() {
+            // Single bus instance
+            expand_bus_type(&input_info.name, bus_type, types, &mut current_offset, &mut paths)?;
+        } else {
+            // Array of bus instances
+            let total_elements: usize = input_info.lengths.iter().product();
+            for i in 0..total_elements {
+                let array_path = format!("{}[{}]", input_info.name, i);
+                expand_bus_type(&array_path, bus_type, types, &mut current_offset, &mut paths)?;
+            }
+        }
+    } else {
+        // This is a field (ff) type
+        if input_info.lengths.is_empty() {
+            // Single field
+            paths.push((input_info.name.clone(), current_offset));
+        } else {
+            // Array of fields - generate multi-dimensional paths
+            let total_elements: usize = input_info.lengths.iter().product();
+            for i in 0..total_elements {
+                let multi_indices = flat_to_multidim_indices(i, &input_info.lengths);
+                let mut array_path = input_info.name.clone();
+                for idx in multi_indices {
+                    array_path.push_str(&format!("[{}]", idx));
+                }
+                paths.push((array_path, current_offset));
+                current_offset += 1;
+            }
+        }
+    }
+
+    Ok(paths)
+}
+
+/// Recursively expand a bus type into individual field paths
+fn expand_bus_type(
+    base_path: &str,
+    bus_type: &ast::Type,
+    types: &[ast::Type],
+    current_offset: &mut usize,
+    paths: &mut Vec<(String, usize)>
+) -> Result<(), Box<dyn Error>> {
+    for field in &bus_type.fields {
+        let field_path = format!("{}.{}", base_path, field.name);
+
+        match &field.kind {
+            ast::TypeFieldKind::Bus(bus_type_name) => {
+                // This field is another bus type
+                let field_type = types.iter().find(|t| t.name == *bus_type_name)
+                    .ok_or_else(|| Box::new(CompilationError::BusTypeNotFound(bus_type_name.to_string())))?;
+
+                if field.dims.is_empty() {
+                    // Single bus instance
+                    expand_bus_type(&field_path, field_type, types, current_offset, paths)?;
+                } else {
+                    // Array of bus instances
+                    let total_elements: usize = field.dims.iter().product();
+                    for i in 0..total_elements {
+                        let array_path = format!("{}[{}]", field_path, i);
+                        expand_bus_type(&array_path, field_type, types, current_offset, paths)?;
+                    }
+                }
+            },
+            ast::TypeFieldKind::Ff => {
+                // This field is a primitive type (ff)
+                if field.dims.is_empty() {
+                    // Single field
+                    paths.push((field_path, *current_offset));
+                    *current_offset += 1;
+                } else {
+                    // Array of fields
+                    let total_elements: usize = field.dims.iter().product();
+                    for i in 0..total_elements {
+                        let array_path = format!("{}[{}]", field_path, i);
+                        paths.push((array_path, *current_offset));
+                        *current_offset += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Convert flat array index to multi-dimensional indices
+fn flat_to_multidim_indices(flat_idx: usize, dimensions: &[usize]) -> Vec<usize> {
+    let mut indices = Vec::new();
+    let mut remaining = flat_idx;
+
+    for &dim in dimensions.iter().rev() {
+        indices.push(remaining % dim);
+        remaining /= dim;
+    }
+
+    indices.reverse();
+    indices
+}
+
+/// Check if a path represents a flat array access and convert to multi-dimensional path
+fn try_convert_flat_to_multidim_path(
+    path: &str,
+    input_infos: &[InputInfo]
+) -> Option<String> {
+    // Extract base name and flat index from path like "b[4]"
+    if let Some(bracket_start) = path.find('[') {
+        let base_name = &path[..bracket_start];
+        let bracket_part = &path[bracket_start..];
+
+        // Parse flat index from "[4]"
+        if let Some(flat_idx_str) = bracket_part.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+            if let Ok(flat_idx) = flat_idx_str.parse::<usize>() {
+                // Find matching input info
+                for input_info in input_infos {
+                    if input_info.name == base_name && input_info.lengths.len() > 1 {
+                        // Convert flat index to multi-dimensional indices
+                        let multi_indices = flat_to_multidim_indices(flat_idx, &input_info.lengths);
+
+                        // Build multi-dimensional path
+                        let mut result = base_name.to_string();
+                        for idx in multi_indices {
+                            result.push_str(&format!("[{}]", idx));
+                        }
+                        return Some(result);
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
 fn init_signals<T: FieldOps, F>(
-    inputs_file: &str, signals_num: usize, ff: &F,
-    input_signals_info: &HashMap<String, usize>) -> Result<Vec<Option<T>>, Box<dyn Error>>
+    inputs_file: &str, signals_num: usize, ff: &F, types: &[ast::Type],
+    input_infos: &[InputInfo]) -> Result<Vec<Option<T>>, Box<dyn Error>>
 where
     for <'a> &'a F: FieldOperations<Type = T> {
 
     let mut signals = vec![None; signals_num];
     signals[0] = Some(T::one());
 
+    // Expand each InputInfo into all its constituent signal paths
+    let mut signal_path_to_idx: HashMap<String, usize> = HashMap::new();
+    for input_info in input_infos {
+        let expanded_paths = expand_input_info_to_signal_paths(input_info, types)?;
+        for (path, idx) in expanded_paths {
+            signal_path_to_idx.insert(path, idx);
+        }
+    }
+
     let inputs_data = fs::read_to_string(inputs_file)?;
     let input_signals = parse_signals_json(inputs_data.as_bytes(), ff)?;
+
     for (path, value) in input_signals.iter() {
-        match input_signals_info.get(path) {
-            None => {
-                if path.ends_with("[0]") {
-                    let path = path.trim_end_matches("[0]");
-                    if let Some(signal_idx) = input_signals_info.get(path) {
-                        signals[*signal_idx] = Some(*value);
-                        continue;
-                    }
-                }
-                return Err(Box::new(
-                    RuntimeError::InvalidSignalsJson(
-                        format!("signal {} is not found in SYM file", path))))
-            },
-            Some(signal_idx) => signals[*signal_idx] = Some(*value),
+        // Try to find exact match first
+        if let Some(&signal_idx) = signal_path_to_idx.get(path) {
+            signal_path_to_idx.remove(path);
+            signals[signal_idx] = Some(*value);
+            continue;
         }
+
+        // Try converting flat array path to multi-dimensional path
+        if let Some(multidim_path) = try_convert_flat_to_multidim_path(path, input_infos) {
+            if let Some(&signal_idx) = signal_path_to_idx.get(&multidim_path) {
+                signal_path_to_idx.remove(&multidim_path);
+                signals[signal_idx] = Some(*value);
+                continue;
+            }
+        }
+
+        // Try parsing as array access with [0] suffix for backwards compatibility
+        if path.ends_with("[0]") {
+            let base_path = path.trim_end_matches("[0]");
+            if let Some(&signal_idx) = signal_path_to_idx.get(base_path) {
+                signal_path_to_idx.remove(base_path);
+                signals[signal_idx] = Some(*value);
+                continue;
+            }
+        }
+
+        return Err(Box::new(
+            RuntimeError::InvalidSignalsJson(
+                format!("signal {} is not found in input mapping", path))));
+    }
+
+    // Check if any input signals were not provided
+    if !signal_path_to_idx.is_empty() {
+        let missing_signals: Vec<String> = signal_path_to_idx.keys().cloned().collect();
+        return Err(Box::new(
+            RuntimeError::InvalidSignalsJson(
+                format!("Missing input signals: {}", missing_signals.join(", ")))));
     }
 
     Ok(signals)
@@ -643,6 +1053,9 @@ where
             ff_expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpBand as u8);
         },
+        FfExpr::Rem(_lhs, _rhs) => {
+            todo!();
+        },
     };
     Ok(())
 }
@@ -720,6 +1133,9 @@ where
             operand_i64(ctx, sig_idx);
             ff_expression(ctx, ff, value)?;
             ctx.code.push(OpCode::StoreCmpSignalAndRun as u8);
+        },
+        Statement::SetCmpInputCntCheck { .. } => {
+            todo!();
         },
         Statement::SetCmpInput { cmp_idx, sig_idx, value } => {
             i64_expression(ctx, ff, cmp_idx)?;
@@ -1078,6 +1494,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use num_traits::One;
     use circom_witnesscalc::ast::{FfExpr, I64Operand, Signal, Statement, I64Expr, Expr};
     use circom_witnesscalc::vm2::disassemble_instruction_to_string;
     use circom_witnesscalc::field::{bn254_prime, Field};
@@ -1375,16 +1792,16 @@ mod tests {
 }"#;
         let result = parse_signals_json(i.as_bytes(), &ff).unwrap();
         let mut want: HashMap<String, U254> = HashMap::new();
-        want.insert("main.a".to_string(), U254::from_str("1").unwrap());
-        want.insert("main.b".to_string(), U254::from_str("0").unwrap());
-        want.insert("main.c".to_string(), U254::from_str("100500").unwrap());
+        want.insert("a".to_string(), U254::from_str("1").unwrap());
+        want.insert("b".to_string(), U254::from_str("0").unwrap());
+        want.insert("c".to_string(), U254::from_str("100500").unwrap());
         assert_eq!(want, result);
 
         // embedded objects
         let i = r#"{ "a": { "b": true } }"#;
         let result = parse_signals_json(i.as_bytes(), &ff).unwrap();
         let mut want: HashMap<String, U254> = HashMap::new();
-        want.insert("main.a.b".to_string(), U254::from_str("1").unwrap());
+        want.insert("a.b".to_string(), U254::from_str("1").unwrap());
         assert_eq!(want, result);
 
         // null error
@@ -1392,13 +1809,13 @@ mod tests {
         let result = parse_signals_json(i.as_bytes(), &ff);
         let binding = result.unwrap_err();
         let err = binding.downcast_ref::<RuntimeError>().unwrap();
-        assert!(matches!(err, RuntimeError::InvalidSignalsJson(x) if x == "unexpected null value at path main.a.b"));
+        assert!(matches!(err, RuntimeError::InvalidSignalsJson(x) if x == "unexpected null value at path a.b"));
 
         // Negative number
         let i = r#"{ "a": { "b": -4 } }"#;
         let result = parse_signals_json(i.as_bytes(), &ff).unwrap();
         let mut want: HashMap<String, U254> = HashMap::new();
-        want.insert("main.a.b".to_string(), U254::from_str("21888242871839275222246405745257275088548364400416034343698204186575808495613").unwrap());
+        want.insert("a.b".to_string(), U254::from_str("21888242871839275222246405745257275088548364400416034343698204186575808495613").unwrap());
         assert_eq!(want, result);
 
         // Float number error
@@ -1407,22 +1824,22 @@ mod tests {
         let binding = result.unwrap_err();
         let err = binding.downcast_ref::<RuntimeError>().unwrap();
         let msg = err.to_string();
-        assert!(matches!(err, RuntimeError::InvalidSignalsJson(x) if x == "invalid number at path main.a.b: 8.3"), "{}", msg);
+        assert!(matches!(err, RuntimeError::InvalidSignalsJson(x) if x == "invalid number at path a.b: 8.3"), "{}", msg);
 
         // string
         let i = r#"{ "a": { "b": "8" } }"#;
         let result = parse_signals_json(i.as_bytes(), &ff).unwrap();
         let mut want: HashMap<String, U254> = HashMap::new();
-        want.insert("main.a.b".to_string(), U254::from_str("8").unwrap());
+        want.insert("a.b".to_string(), U254::from_str("8").unwrap());
         assert_eq!(want, result);
 
         // array
         let i = r#"{ "a": { "b": ["8", 2, 3] } }"#;
         let result = parse_signals_json(i.as_bytes(), &ff).unwrap();
         let mut want: HashMap<String, U254> = HashMap::new();
-        want.insert("main.a.b[0]".to_string(), U254::from_str("8").unwrap());
-        want.insert("main.a.b[1]".to_string(), U254::from_str("2").unwrap());
-        want.insert("main.a.b[2]".to_string(), U254::from_str("3").unwrap());
+        want.insert("a.b[0]".to_string(), U254::from_str("8").unwrap());
+        want.insert("a.b[1]".to_string(), U254::from_str("2").unwrap());
+        want.insert("a.b[2]".to_string(), U254::from_str("3").unwrap());
         assert_eq!(want, result);
 
         // buses and arrays
@@ -1444,20 +1861,20 @@ mod tests {
 }"#;
         let result = parse_signals_json(i.as_bytes(), &ff).unwrap();
         let mut want: HashMap<String, U254> = HashMap::new();
-        want.insert("main.a[0]".to_string(), U254::from_str("300").unwrap());
-        want.insert("main.a[1]".to_string(), U254::from_str("3").unwrap());
-        want.insert("main.a[2]".to_string(), U254::from_str("8432").unwrap());
-        want.insert("main.a[3]".to_string(), U254::from_str("3").unwrap());
-        want.insert("main.a[4]".to_string(), U254::from_str("2").unwrap());
-        want.insert("main.inB".to_string(), U254::from_str("100500").unwrap());
-        want.insert("main.v.v[0].start.x".to_string(), U254::from_str("3").unwrap());
-        want.insert("main.v.v[0].start.y".to_string(), U254::from_str("5").unwrap());
-        want.insert("main.v.v[0].end.x".to_string(), U254::from_str("6").unwrap());
-        want.insert("main.v.v[0].end.y".to_string(), U254::from_str("7").unwrap());
-        want.insert("main.v.v[1].start.x".to_string(), U254::from_str("8").unwrap());
-        want.insert("main.v.v[1].start.y".to_string(), U254::from_str("9").unwrap());
-        want.insert("main.v.v[1].end.x".to_string(), U254::from_str("10").unwrap());
-        want.insert("main.v.v[1].end.y".to_string(), U254::from_str("11").unwrap());
+        want.insert("a[0]".to_string(), U254::from_str("300").unwrap());
+        want.insert("a[1]".to_string(), U254::from_str("3").unwrap());
+        want.insert("a[2]".to_string(), U254::from_str("8432").unwrap());
+        want.insert("a[3]".to_string(), U254::from_str("3").unwrap());
+        want.insert("a[4]".to_string(), U254::from_str("2").unwrap());
+        want.insert("inB".to_string(), U254::from_str("100500").unwrap());
+        want.insert("v.v[0].start.x".to_string(), U254::from_str("3").unwrap());
+        want.insert("v.v[0].start.y".to_string(), U254::from_str("5").unwrap());
+        want.insert("v.v[0].end.x".to_string(), U254::from_str("6").unwrap());
+        want.insert("v.v[0].end.y".to_string(), U254::from_str("7").unwrap());
+        want.insert("v.v[1].start.x".to_string(), U254::from_str("8").unwrap());
+        want.insert("v.v[1].start.y".to_string(), U254::from_str("9").unwrap());
+        want.insert("v.v[1].end.x".to_string(), U254::from_str("10").unwrap());
+        want.insert("v.v[1].end.y".to_string(), U254::from_str("11").unwrap());
         assert_eq!(want, result);
     }
 
@@ -1530,5 +1947,605 @@ mod tests {
             Box::new(ff(op1)),
             Box::new(ff(op2))
         )
+    }
+
+    #[test]
+    fn test_build_input_info() {
+        // Parse the example CVM file
+        let cvm_content = r#";; Prime value
+%%prime 21888242871839275222246405745257275088548364400416034343698204186575808495617
+
+
+;; Memory of signals
+%%signals 44
+
+
+;; Heap of components
+%%components_heap 16
+
+
+;; Types (for each field we store name type offset size nDims dims)
+%%type $bus_0
+       $x $ff 0 1 0
+       $y $ff 1 1 0
+%%type $bus_1
+       $start $$bus_0 0 2 0
+       $end $$bus_0 2 2 0
+%%type $bus_2
+       $v $$bus_1 0 4 1  2
+
+
+;; Main template
+%%start Main_2
+
+
+;; Component creation mode (implicit/explicit)
+%%components implicit
+
+
+;; Witness (signal list)
+%%witness 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 30 31 32 33 35 36
+
+%%template Tmpl1_0 [ ff 0 ] [ ff 1 2] [3] [ ]
+x_0 = i64.0
+x_1 = get_signal i64.1
+
+%%template Tmpl2_1 [ ff 0 ] [ ff 1 3] [4] [ ]
+x_4 = i64.0
+x_5 = get_signal i64.1
+
+
+%%template Main_2 [ ff 2 2 3 bus_1 0 ] [ ff 1 5 ff 0  bus_2 0 ] [33] [ 0 -1 0 1 ]
+x_10 = i64.2
+x_11 = get_signal i64.16
+"#;
+
+        let sym_content = r#"1,1,2,main.out[0][0]
+2,2,2,main.out[0][1]
+3,3,2,main.out[0][2]
+4,4,2,main.out[1][0]
+5,5,2,main.out[1][1]
+6,6,2,main.out[1][2]
+7,7,2,main.v2.start.x
+8,8,2,main.v2.start.y
+9,9,2,main.v2.end.x
+10,10,2,main.v2.end.y
+11,11,2,main.a[0]
+12,12,2,main.a[1]
+13,13,2,main.a[2]
+14,14,2,main.a[3]
+15,15,2,main.a[4]
+16,16,2,main.inB
+17,17,2,main.v.v[0].start.x
+18,18,2,main.v.v[0].start.y
+19,19,2,main.v.v[0].end.x
+20,20,2,main.v.v[0].end.y
+21,21,2,main.v.v[1].start.x
+22,22,2,main.v.v[1].start.y
+23,23,2,main.v.v[1].end.x
+24,24,2,main.v.v[1].end.y
+25,25,2,main.s
+26,26,2,main.s2[0]
+27,27,2,main.s2[1]
+28,-1,2,main.s2[2]
+29,-1,2,main.s2[3]
+30,28,2,main.s4[0]
+31,29,2,main.s4[1]
+32,30,2,main.s4[2]
+33,31,2,main.s4[3]
+34,-1,1,main.b.out
+35,32,1,main.b.in[0]
+36,33,1,main.b.in[1]
+37,-1,1,main.b.in[2]
+38,-1,0,main.c1[0].out
+39,-1,0,main.c1[0].in[0]
+40,-1,0,main.c1[0].in[1]
+41,-1,0,main.c1[2].out
+42,-1,0,main.c1[2].in[0]
+43,-1,0,main.c1[2].in[1]
+"#;
+
+        // Parse the CVM content
+        let program = parse(cvm_content).unwrap();
+
+        // Find the main template ID
+        let mut main_template_id = None;
+        for (i, t) in program.templates.iter().enumerate() {
+            if t.name == program.start {
+                main_template_id = Some(i);
+                break;
+            }
+        }
+        let main_template_id = main_template_id.unwrap();
+
+        // Build input info
+        let input_infos = build_input_info_from_sym(
+            sym_content,
+            main_template_id,
+            &program.templates[main_template_id],
+            &program.types
+        ).unwrap();
+
+        // Verify expected results
+        let expected = vec![
+            InputInfo {
+                name: "a".to_string(),
+                offset: 11,
+                lengths: vec![5],
+                type_id: None,
+            },
+            InputInfo {
+                name: "inB".to_string(),
+                offset: 16,
+                lengths: vec![],
+                type_id: None,
+            },
+            InputInfo {
+                name: "v".to_string(),
+                offset: 17,
+                lengths: vec![],
+                type_id: Some("bus_2".to_string()),
+            },
+        ];
+
+        assert_eq!(input_infos, expected);
+    }
+
+    #[test]
+    fn test_build_input_info_with_custom_component_name() {
+        // Test with a component name other than "main"
+        let sym_content = r#"1,1,2,myComponent.out[0][0]
+2,2,2,myComponent.out[0][1]
+3,3,2,myComponent.out[0][2]
+4,4,2,myComponent.out[1][0]
+5,5,2,myComponent.out[1][1]
+6,6,2,myComponent.out[1][2]
+7,7,2,myComponent.v2.start.x
+8,8,2,myComponent.v2.start.y
+9,9,2,myComponent.v2.end.x
+10,10,2,myComponent.v2.end.y
+11,11,2,myComponent.a[0]
+12,12,2,myComponent.a[1]
+13,13,2,myComponent.a[2]
+14,14,2,myComponent.a[3]
+15,15,2,myComponent.a[4]
+16,16,2,myComponent.inB
+17,17,2,myComponent.v.v[0].start.x
+18,18,2,myComponent.v.v[0].start.y
+19,19,2,myComponent.v.v[0].end.x
+20,20,2,myComponent.v.v[0].end.y
+21,21,2,myComponent.v.v[1].start.x
+22,22,2,myComponent.v.v[1].start.y
+23,23,2,myComponent.v.v[1].end.x
+24,24,2,myComponent.v.v[1].end.y
+25,25,2,myComponent.s
+26,26,2,myComponent.s2[0]
+27,27,2,myComponent.s2[1]
+28,-1,2,myComponent.s2[2]
+29,-1,2,myComponent.s2[3]
+30,28,2,myComponent.s4[0]
+31,29,2,myComponent.s4[1]
+32,30,2,myComponent.s4[2]
+33,31,2,myComponent.s4[3]
+34,-1,1,myComponent.b.out
+35,32,1,myComponent.b.in[0]
+36,33,1,myComponent.b.in[1]
+37,-1,1,myComponent.b.in[2]
+38,-1,0,myComponent.c1[0].out
+39,-1,0,myComponent.c1[0].in[0]
+40,-1,0,myComponent.c1[0].in[1]
+41,-1,0,myComponent.c1[2].out
+42,-1,0,myComponent.c1[2].in[0]
+43,-1,0,myComponent.c1[2].in[1]
+"#;
+
+        // Parse the CVM content - same as before
+        let cvm_content = r#";; Prime value
+%%prime 21888242871839275222246405745257275088548364400416034343698204186575808495617
+
+
+;; Memory of signals
+%%signals 44
+
+
+;; Heap of components
+%%components_heap 16
+
+
+;; Types (for each field we store name type offset size nDims dims)
+%%type $bus_0
+       $x $ff 0 1 0
+       $y $ff 1 1 0
+%%type $bus_1
+       $start $$bus_0 0 2 0
+       $end $$bus_0 2 2 0
+%%type $bus_2
+       $v $$bus_1 0 4 1  2
+
+
+;; Main template
+%%start Main_2
+
+
+;; Component creation mode (implicit/explicit)
+%%components implicit
+
+
+;; Witness (signal list)
+%%witness 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 30 31 32 33 35 36
+
+%%template Tmpl1_0 [ ff 0 ] [ ff 1 2] [3] [ ]
+x_0 = i64.0
+x_1 = get_signal i64.1
+
+%%template Tmpl2_1 [ ff 0 ] [ ff 1 3] [4] [ ]
+x_4 = i64.0
+x_5 = get_signal i64.1
+
+
+%%template Main_2 [ ff 2 2 3 bus_1 0 ] [ ff 1 5 ff 0  bus_2 0 ] [33] [ 0 -1 0 1 ]
+x_10 = i64.2
+x_11 = get_signal i64.16
+"#;
+
+        let program = parse(cvm_content).unwrap();
+
+        // Find the main template ID
+        let mut main_template_id = None;
+        for (i, t) in program.templates.iter().enumerate() {
+            if t.name == program.start {
+                main_template_id = Some(i);
+                break;
+            }
+        }
+        let main_template_id = main_template_id.unwrap();
+
+        // Build input info with custom component name
+        let input_infos = build_input_info_from_sym(
+            sym_content,
+            main_template_id,
+            &program.templates[main_template_id],
+            &program.types
+        ).unwrap();
+
+        // Should still get the same results - just the component name prefix changes
+        let expected = vec![
+            InputInfo {
+                name: "a".to_string(),
+                offset: 11,
+                lengths: vec![5],
+                type_id: None,
+            },
+            InputInfo {
+                name: "inB".to_string(),
+                offset: 16,
+                lengths: vec![],
+                type_id: None,
+            },
+            InputInfo {
+                name: "v".to_string(),
+                offset: 17,
+                lengths: vec![],
+                type_id: Some("bus_2".to_string()),
+            },
+        ];
+
+        assert_eq!(input_infos, expected);
+    }
+
+    #[test]
+    fn test_array_detection() {
+        // Test that we correctly reject invalid array indices (not [0])
+        let sym_content = r#"1,1,0,main.out[0]
+2,2,0,main.out[1]
+3,3,0,main.arrayInput[0]
+4,4,0,main.arrayInput[1]
+5,5,0,main.arrayInput[2]
+6,6,0,main.nonArrayInput
+7,7,0,main.busArray[0].x
+8,8,0,main.busArray[0].y
+9,9,0,main.busArray[1].x
+10,10,0,main.busArray[1].y
+11,11,0,main.notArray[5]
+12,12,0,main.regularBus.x
+13,13,0,main.regularBus.y
+"#;
+
+        let cvm_content = r#";; Prime value
+%%prime 21888242871839275222246405745257275088548364400416034343698204186575808495617
+
+;; Memory of signals
+%%signals 14
+
+;; Heap of components
+%%components_heap 1
+
+;; Types (for each field we store name type offset size nDims dims)
+%%type $bus_0
+       $x $ff 0 1 0
+       $y $ff 1 1 0
+
+;; Main template
+%%start Main_0
+
+;; Component creation mode (implicit/explicit)
+%%components implicit
+
+;; Witness (signal list)
+%%witness 0 1 2 3 4 5 6 7 8 9 10 11 12 13
+
+%%template Main_0 [ ff 1 2 ] [ ff 1 3 ff 0 bus_0 1 2 ff 0 bus_0 0 ] [14] [ ]
+x_0 = get_signal i64.1
+"#;
+
+        let program = parse(cvm_content).unwrap();
+        let main_template_id = program.templates.iter().position(|t| t.name == program.start).unwrap();
+
+        // This should fail because main.notArray[5] has invalid array index [5] instead of [0]
+        let result = build_input_info_from_sym(
+            sym_content,
+            main_template_id,
+            &program.templates[main_template_id],
+            &program.types
+        );
+
+        assert!(result.is_err());
+        if let Err(e) = result {
+            let error_message = e.to_string();
+            assert!(error_message.contains("Invalid array index in signal name 'notArray[5]': expected [0] but found '[5]'"));
+        }
+    }
+
+    #[test]
+    fn test_missing_signal_error() {
+        // Test that we get an error when a signal is missing from the sym file
+        let sym_content = r#"1,1,0,main.out[0]
+2,2,0,main.out[1]
+3,3,0,main.arrayInput[0]
+4,4,0,main.arrayInput[1]
+5,5,0,main.arrayInput[2]
+6,6,0,main.nonArrayInput
+7,7,0,main.busArray[0].x
+8,8,0,main.busArray[0].y
+9,9,0,main.busArray[1].x
+10,10,0,main.busArray[1].y
+12,12,0,main.regularBus.x
+13,13,0,main.regularBus.y
+"#;
+
+        let cvm_content = r#";; Prime value
+%%prime 21888242871839275222246405745257275088548364400416034343698204186575808495617
+
+;; Memory of signals
+%%signals 15
+
+;; Heap of components
+%%components_heap 1
+
+;; Types (for each field we store name type offset size nDims dims)
+%%type $bus_0
+       $x $ff 0 1 0
+       $y $ff 1 1 0
+
+;; Main template
+%%start Main_0
+
+;; Component creation mode (implicit/explicit)
+%%components implicit
+
+;; Witness (signal list)
+%%witness 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14
+
+%%template Main_0 [ ff 1 2 ] [ ff 1 3 ff 0 bus_0 1 2 ff 0 bus_0 0 ff 0 ] [15] [ ]
+x_0 = get_signal i64.1
+"#;
+
+        let program = parse(cvm_content).unwrap();
+        let main_template_id = program.templates.iter().position(|t| t.name == program.start).unwrap();
+
+        // This should fail because we're missing signal at index 14 (the last ff 0 input)
+        let result = build_input_info_from_sym(
+            sym_content,
+            main_template_id,
+            &program.templates[main_template_id],
+            &program.types
+        );
+
+        assert!(result.is_err());
+        if let Err(e) = result {
+            let error_message = e.to_string();
+            assert!(error_message.contains("Signal at index 11 not found in sym file"));
+        }
+    }
+
+    #[test]
+    fn test_signal_prefix_mismatch_error() {
+        // Test that we get an error when a signal doesn't have the expected component prefix
+        let sym_content = r#"1,1,0,main.out[0]
+2,2,0,main.out[1]
+3,3,0,wrongComponent.arrayInput[0]
+"#;
+
+        let cvm_content = r#";; Prime value
+%%prime 21888242871839275222246405745257275088548364400416034343698204186575808495617
+
+;; Memory of signals
+%%signals 4
+
+;; Heap of components
+%%components_heap 1
+
+;; Types (for each field we store name type offset size nDims dims)
+
+;; Main template
+%%start Main_0
+
+;; Component creation mode (implicit/explicit)
+%%components implicit
+
+;; Witness (signal list)
+%%witness 0 1 2 3
+
+%%template Main_0 [ ff 1 2 ] [ ff 1 1 ] [4] [ ]
+x_0 = get_signal i64.1
+"#;
+
+        let program = parse(cvm_content).unwrap();
+        let main_template_id = program.templates.iter().position(|t| t.name == program.start).unwrap();
+
+        // This should fail because signal at index 3 has prefix "wrongComponent" instead of "main"
+        let result = build_input_info_from_sym(
+            sym_content,
+            main_template_id,
+            &program.templates[main_template_id],
+            &program.types
+        );
+
+        assert!(result.is_err());
+        if let Err(e) = result {
+            let error_message = e.to_string();
+            assert!(error_message.contains("Signal 'wrongComponent.arrayInput[0]' does not start with expected component prefix 'main.'"));
+        }
+    }
+
+    #[test]
+    fn test_init_signals() {
+        // Parse the CVM file to get types and template information
+        let cvm_content = include_str!("../../tests/cvm-compile/data/test_init_signals__cvm.txt");
+        let sym_content = include_str!("../../tests/cvm-compile/data/test_init_signals__sym.txt");
+
+        let program = parse(cvm_content).unwrap();
+
+        // Find the main template ID
+        let main_template_id = program.templates.iter()
+            .position(|t| t.name == program.start)
+            .unwrap();
+
+        let field = Field::new(bn254_prime);
+
+        let inputs_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/cvm-compile/data/test_init_signals__inputs.json");
+
+        let input_infos = build_input_info_from_sym(
+            sym_content, main_template_id,
+            &program.templates[main_template_id],
+            &program.types).unwrap();
+
+        // Call init_signals with the new signature
+        let result = init_signals::<U254, _>(
+            inputs_path.to_string_lossy().as_ref(),
+            44, // signals_num
+            &field,
+            &program.types,
+            &input_infos,
+        ).unwrap();
+
+        // Expected result
+        let want: Vec<Option<U254>> = vec![
+            Some(U254::one()), // 0
+            None, // 1
+            None, // 2
+            None, // 3
+            None, // 4
+            None, // 5
+            None, // 6
+            None, // 7
+            None, // 8
+            None, // 9
+            None, // 10
+            Some(U254::from_str("1").unwrap()), // 11
+            Some(U254::from_str("2").unwrap()), // 12
+            Some(U254::from_str("3").unwrap()), // 13
+            Some(U254::from_str("4").unwrap()), // 14
+            Some(U254::from_str("5").unwrap()), // 15
+            Some(U254::from_str("6").unwrap()), // 16
+            Some(U254::from_str("7").unwrap()), // 17
+            Some(U254::from_str("8").unwrap()), // 18
+            Some(U254::from_str("9").unwrap()), // 19
+            Some(U254::from_str("10").unwrap()), // 20
+            Some(U254::from_str("11").unwrap()), // 21
+            Some(U254::from_str("12").unwrap()), // 22
+            Some(U254::from_str("13").unwrap()), // 23
+            Some(U254::from_str("14").unwrap()), // 24
+            None, // 25
+            None, // 26
+            None, // 27
+            None, // 28
+            None, // 29
+            None, // 30
+            None, // 31
+            None, // 32
+            None, // 33
+            None, // 34
+            None, // 35
+            None, // 36
+            None, // 37
+            None, // 38
+            None, // 39
+            None, // 40
+            None, // 41
+            None, // 42
+            None, // 43
+        ];
+
+        assert_eq!(result, want);
+    }
+
+    #[test]
+    fn test_array_inputs() {
+        // Parse the CVM file to get types and template information
+        let cvm_content = include_str!("../../tests/cvm-compile/data/test_array_inputs__cvm.txt");
+        let sym_content = include_str!("../../tests/cvm-compile/data/test_array_inputs__sym.txt");
+
+        let program = parse(cvm_content).unwrap();
+
+        // Find the main template ID
+        let main_template_id = program.templates.iter()
+            .position(|t| t.name == program.start)
+            .unwrap();
+
+        let field = Field::new(bn254_prime);
+
+        let inputs_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/cvm-compile/data/test_array_inputs__inputs.json");
+
+        let input_infos = build_input_info_from_sym(
+            sym_content, main_template_id,
+            &program.templates[main_template_id],
+            &program.types).unwrap();
+
+        // Call init_signals with the new signature
+        let result = init_signals::<U254, _>(
+            inputs_path.to_string_lossy().as_ref(),
+            19, // signals_num
+            &field,
+            &program.types,
+            &input_infos,
+        ).unwrap();
+
+        // Expected result
+        let want: Vec<Option<U254>> = vec![
+            Some(U254::one()), // 0
+            None, // 1
+            None, // 2
+            None, // 3
+            None, // 4
+            None, // 5
+            None, // 6
+            Some(U254::from_str("1").unwrap()), // 7
+            Some(U254::from_str("2").unwrap()), // 8
+            Some(U254::from_str("3").unwrap()), // 9
+            Some(U254::from_str("4").unwrap()), // 10
+            Some(U254::from_str("5").unwrap()), // 11
+            Some(U254::from_str("6").unwrap()), // 12
+            Some(U254::from_str("7").unwrap()), // 13
+            Some(U254::from_str("8").unwrap()), // 14
+            Some(U254::from_str("9").unwrap()), // 15
+            Some(U254::from_str("10").unwrap()), // 16
+            Some(U254::from_str("11").unwrap()), // 17
+            Some(U254::from_str("12").unwrap()), // 18
+        ];
+
+        assert_eq!(result, want);
     }
 }

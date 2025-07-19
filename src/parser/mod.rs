@@ -134,9 +134,12 @@ fn parse_type_field(input: &mut &str) -> ModalResult<TypeField> {
     
     let kind = if kind_str == "$ff" {
         TypeFieldKind::Ff
+    } else if kind_str.starts_with("$$") {
+        // Remove the $$ prefix from bus names
+        TypeFieldKind::Bus(kind_str.strip_prefix("$$").unwrap().to_string())
     } else {
-        // Remove the $ prefix from bus names
-        TypeFieldKind::Bus(kind_str.strip_prefix('$').unwrap_or(kind_str).to_string())
+        // Bus names must start with $$
+        fail.parse_next(input)?
     };
     
     Ok(TypeField {
@@ -498,6 +501,12 @@ fn parse_statement(input: &mut &str) -> ModalResult<Statement> {
             preceded(space1, parse_ff_expr))
             .map(
                 |(op1, op2, op3)| Statement::SetCmpSignalRun{ cmp_idx: op1, sig_idx: op2, value: op3 }),
+        "set_cmp_input_cnt_check" => (
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_ff_expr))
+            .map(
+                |(op1, op2, op3)| Statement::SetCmpInputCntCheck{ cmp_idx: op1, sig_idx: op2, value: op3 }),
         "set_cmp_input" => (
             preceded(space1, parse_i64_expression),
             preceded(space1, parse_i64_expression),
@@ -566,7 +575,7 @@ fn parse_statement(input: &mut &str) -> ModalResult<Statement> {
 
     // For set_signal, ff.store, set_cmp_input_run, error, ff.mreturn, and ff.mcall, we need to parse the line end
     match &s {
-        Statement::SetSignal { .. } | Statement::FfStore { .. } | Statement::SetCmpSignalRun { .. } | Statement::Error { .. } | Statement::FfMReturn { .. } | Statement::FfMCall { .. } => {
+        Statement::SetSignal { .. } | Statement::FfStore { .. } | Statement::SetCmpSignalRun { .. } | Statement::SetCmpInputCntCheck { .. } | Statement::Error { .. } | Statement::FfMReturn { .. } | Statement::FfMCall { .. } => {
             (space0, opt(parse_eol_comment), parse_line_end).parse_next(input)?;
         }
         _ => {}
@@ -603,6 +612,8 @@ fn parse_ff_expression(input: &mut &str) -> ModalResult<FfExpr> {
                 .map(|(op1, op2)| FfExpr::FfShr(Box::new(op1), Box::new(op2))),
             "ff.band" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
                 .map(|(op1, op2)| FfExpr::FfBand(Box::new(op1), Box::new(op2))),
+            "ff.rem" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
+                .map(|(op1, op2)| FfExpr::Rem(Box::new(op1), Box::new(op2))),
             _ => fail::<_, FfExpr, _>,
         },
         // Try to parse as a literal
@@ -1102,6 +1113,15 @@ expected valid i64 value";
         // test ff.lt expression
         let input = "ff.lt x_3 ff.2";
         let want = FfExpr::Lt(
+            Box::new(FfExpr::Variable("x_3".to_string())),
+            Box::new(FfExpr::Literal(BigUint::from(2u32)))
+        );
+        let op = parse_ff_expression.parse(input).unwrap();
+        assert_eq!(op, want);
+
+        // test ff.rem expression
+        let input = "ff.rem x_3 ff.2";
+        let want = FfExpr::Rem(
             Box::new(FfExpr::Variable("x_3".to_string())),
             Box::new(FfExpr::Literal(BigUint::from(2u32)))
         );
@@ -1692,10 +1712,10 @@ x_1 = get_signal i64.2
        $x $ff 0 1 0
        $y $ff 1 1 0
 %%type $bus_1
-       $start $bus_0 0 2 0
-       $end $bus_0 2 2 0
+       $start $$bus_0 0 2 0
+       $end $$bus_0 2 2 0
 %%type $bus_2
-       $v $bus_1 0 4 1  2
+       $v $$bus_1 0 4 1  2
 ;; Main template
 %%start Multiplier_0
 ;; Component creation mode (implicit/explicit)
@@ -2118,7 +2138,6 @@ x";
         let statement = parse_statement.parse(input).unwrap();
         assert_eq!(statement, want);
     }
-
 
     fn big_uint(n: &str) -> BigUint {
         BigUint::from_str_radix(n, 10).unwrap()

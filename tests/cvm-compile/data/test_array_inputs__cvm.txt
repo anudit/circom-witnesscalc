@@ -1,0 +1,202 @@
+;; Prime value
+%%prime 21888242871839275222246405745257275088548364400416034343698204186575808495617
+
+
+;; Memory of signals
+%%signals 19
+
+
+;; Heap of components
+%%components_heap 3
+
+
+;; Types (for each field we store name type offset size nDims dims)
+
+
+;; Main template
+%%start Main_0
+
+
+;; Component creation mode (implicit/explicit)
+%%components implicit
+
+
+;; Witness (signal list)
+%%witness 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18
+
+
+%%template Main_0 [ ff 1 6] [ ff 2 2 3 ff 2 3 2] [18] [ ]
+x_0 = i64.2
+;;line 8
+;; getting dest
+ff.store i64.0 ff.0
+;; end of store bucket
+;; loop bucket. Line 8
+loop
+;; compute bucket
+;; load bucket
+x_1 = ff.load i64.0
+;; end of load bucket
+;; OP(LESSER)
+x_2 = ff.lt x_1 ff.2
+;; end of compute bucket
+ff.if x_2
+;;line 9
+;; getting dest
+ff.store i64.1 ff.0
+;; end of store bucket
+;; loop bucket. Line 9
+loop
+;; compute bucket
+;; load bucket
+x_3 = ff.load i64.1
+;; end of load bucket
+;; OP(LESSER)
+x_4 = ff.lt x_3 ff.3
+;; end of compute bucket
+ff.if x_4
+;;line 10
+;; compute bucket
+;; load bucket
+;; compute bucket
+;; compute bucket
+;; compute bucket
+;; compute bucket
+;; load bucket
+x_5 = ff.load i64.0
+;; end of load bucket
+;; OP(TO_ADDRESS)
+x_6 = i64.wrap_ff x_5
+;; end of compute bucket
+;; OP(MUL_ADDRESS)
+;;line 0
+x_7 = i64.mul i64.3 x_6
+;; end of compute bucket
+;; compute bucket
+;; compute bucket
+;; load bucket
+;;line 10
+x_8 = ff.load i64.1
+;; end of load bucket
+;; OP(TO_ADDRESS)
+x_9 = i64.wrap_ff x_8
+;; end of compute bucket
+;; OP(MUL_ADDRESS)
+;;line 0
+x_10 = i64.mul i64.1 x_9
+;; end of compute bucket
+;; OP(ADD_ADDRESS)
+x_11 = i64.add x_7 x_10
+;; end of compute bucket
+;; OP(ADD_ADDRESS)
+x_12 = i64.add x_11 i64.6
+;; end of compute bucket
+x_13 = get_signal x_12
+;; end of load bucket
+;; load bucket
+;;line 10
+;; compute bucket
+;; compute bucket
+;; compute bucket
+;; compute bucket
+;; load bucket
+x_14 = ff.load i64.1
+;; end of load bucket
+;; OP(TO_ADDRESS)
+x_15 = i64.wrap_ff x_14
+;; end of compute bucket
+;; OP(MUL_ADDRESS)
+;;line 0
+x_16 = i64.mul i64.2 x_15
+;; end of compute bucket
+;; compute bucket
+;; compute bucket
+;; load bucket
+;;line 10
+x_17 = ff.load i64.0
+;; end of load bucket
+;; OP(TO_ADDRESS)
+x_18 = i64.wrap_ff x_17
+;; end of compute bucket
+;; OP(MUL_ADDRESS)
+;;line 0
+x_19 = i64.mul i64.1 x_18
+;; end of compute bucket
+;; OP(ADD_ADDRESS)
+x_20 = i64.add x_16 x_19
+;; end of compute bucket
+;; OP(ADD_ADDRESS)
+x_21 = i64.add x_20 i64.12
+;; end of compute bucket
+x_22 = get_signal x_21
+;; end of load bucket
+;; OP(MUL)
+;;line 10
+x_23 = ff.mul x_13 x_22
+;; end of compute bucket
+;; getting dest
+;; compute bucket
+;; compute bucket
+;; compute bucket
+;; compute bucket
+;; compute bucket
+;; load bucket
+x_24 = ff.load i64.0
+;; end of load bucket
+;; OP(TO_ADDRESS)
+x_25 = i64.wrap_ff x_24
+;; end of compute bucket
+;; OP(MUL_ADDRESS)
+x_26 = i64.mul x_25 i64.3
+;; end of compute bucket
+;; compute bucket
+;; load bucket
+x_27 = ff.load i64.1
+;; end of load bucket
+;; OP(TO_ADDRESS)
+x_28 = i64.wrap_ff x_27
+;; end of compute bucket
+;; OP(ADD_ADDRESS)
+x_29 = i64.add x_26 x_28
+;; end of compute bucket
+;; OP(MUL_ADDRESS)
+;;line 0
+x_30 = i64.mul i64.1 x_29
+;; end of compute bucket
+;; OP(ADD_ADDRESS)
+x_31 = i64.add x_30 i64.0
+;; end of compute bucket
+;;line 10
+set_signal x_31 x_23
+;; end of store bucket
+;;line 9
+;; compute bucket
+;; load bucket
+x_32 = ff.load i64.1
+;; end of load bucket
+;; OP(ADD)
+x_33 = ff.add x_32 ff.1
+;; end of compute bucket
+;; getting dest
+ff.store i64.1 x_33
+;; end of store bucket
+continue
+end
+end
+;; end of loop bucket
+;;line 8
+;; compute bucket
+;; load bucket
+x_34 = ff.load i64.0
+;; end of load bucket
+;; OP(ADD)
+x_35 = ff.add x_34 ff.1
+;; end of compute bucket
+;; getting dest
+ff.store i64.0 x_35
+;; end of store bucket
+continue
+end
+end
+;; end of loop bucket
+

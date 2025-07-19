@@ -258,7 +258,12 @@ pub enum Statement {
     FfMCall {
         name: String,
         args: Vec<CallArgument>,
-    }
+    },
+    SetCmpInputCntCheck {
+        cmp_idx: I64Operand,
+        sig_idx: I64Operand,
+        value: FfExpr
+    },
 }
 
 // Clone is always derived (not just in tests) to allow usage across crate boundaries.
@@ -305,6 +310,7 @@ pub enum FfExpr {
     Variable(String),
     Literal(BigUint),
     Load(I64Operand),
+    Rem(Box<FfExpr>, Box<FfExpr>),
 }
 
 // See I64Operand comment above for why Clone is always derived

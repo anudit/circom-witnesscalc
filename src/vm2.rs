@@ -46,27 +46,28 @@ pub enum OpCode {
     // stack_ff contains the value to store
     // stack_i64:0 contains the signal index
     // stack_i64:-1 contains the component index
-    StoreCmpSignalAndRun = 14,
+    StoreCmpSignalAndRun   = 14,
+    StoreCmpSignalCntCheck = 15,
     // Store the component input without decrementing input counter
     // stack_ff contains the value to store
     // stack_i64:0 contains the signal index
     // stack_i64:-1 contains the component index
-    StoreCmpInput        = 15,
-    OpMul                = 16,
-    OpAdd                = 17,
-    OpNeq                = 18,
-    OpDiv                = 19,
-    OpSub                = 20,
-    OpEq                 = 21,
-    OpEqz                = 22,
-    OpI64Add             = 23,
-    OpI64Sub             = 24,
+    StoreCmpInput        = 16,
+    OpMul                = 17,
+    OpAdd                = 18,
+    OpNeq                = 19,
+    OpDiv                = 20,
+    OpSub                = 21,
+    OpEq                 = 22,
+    OpEqz                = 23,
+    OpI64Add             = 24,
+    OpI64Sub             = 25,
     // Memory return operation
     // Copy data from source memory to destination memory
     // stack_i64:0 contains the size (number of elements)
     // stack_i64:-1 contains the source address
     // stack_i64:-2 contains the destination address
-    FfMReturn            = 25,
+    FfMReturn            = 26,
     // Function call operation
     // arguments: 4-byte function index + 1-byte argument count
     // Then for each argument:
@@ -77,48 +78,49 @@ pub enum OpCode {
     //     8-11 = i64.memory (bit flags: bit 0 = addr is variable, bit 1 = size is variable)
     //   For literals: value bytes (8 for i64, T::BYTES for ff)
     //   For memory: 2 i64 values (either literal values or variable indices based on type flags)
-    FfMCall              = 26,
+    FfMCall              = 27,
     // Memory store operation (ff.store)
     // stack_ff:0 contains the value to store
     // stack_i64:0 contains the memory address
-    FfStore              = 27,
+    FfStore              = 28,
     // Memory load operation (ff.load)
     // stack_i64:0 contains the memory address
     // Result pushed to stack_ff
-    FfLoad               = 28,
+    FfLoad               = 29,
     // Memory load operation (i64.load)
     // stack_i64:0 contains the memory address
     // Result pushed to stack_i64
-    I64Load              = 29,
+    I64Load              = 30,
     // Field less-than comparison (ff.lt)
     // stack_ff:0 contains right operand
     // stack_ff:-1 contains left operand
     // Result pushed to stack_ff (1 if lhs < rhs, 0 otherwise)
-    OpLt                 = 30,
+    OpLt                 = 31,
     // Integer multiplication (i64.mul)
     // stack_i64:0 contains right operand
     // stack_i64:-1 contains left operand
     // Result pushed to stack_i64
-    OpI64Mul             = 31,
+    OpI64Mul             = 32,
     // Integer less-than-or-equal comparison (i64.le)
     // stack_i64:0 contains right operand
     // stack_i64:-1 contains left operand
     // Result pushed to stack_i64 (1 if lhs <= rhs, 0 otherwise)
-    OpI64Lte             = 32,
+    OpI64Lte             = 33,
     // Wrap field element to i64 (i64.wrap_ff)
     // stack_ff:0 contains the field element
     // Result pushed to stack_i64
-    I64WrapFf            = 33,
+    I64WrapFf            = 34,
     // Field shift right (ff.shr)
     // stack_ff:0 contains right operand (shift amount)
     // stack_ff:-1 contains left operand (value to shift)
     // Result pushed to stack_ff
-    OpShr                = 34,
+    OpShr                = 35,
     // Field bitwise AND (ff.band)
     // stack_ff:0 contains right operand
     // stack_ff:-1 contains left operand
     // Result pushed to stack_ff
-    OpBand               = 35,
+    OpBand               = 36,
+    OpRem                = 37,
 }
 
 pub struct Component {
@@ -636,6 +638,9 @@ where
         OpCode::StoreCmpSignalAndRun => {
             output.push_str("StoreCmpSignalAndRun");
         }
+        OpCode::StoreCmpSignalCntCheck => {
+            output.push_str("StoreCmpSignalCntCheck");
+        }
         OpCode::StoreCmpInput => {
             output.push_str("StoreCmpInput");
         }
@@ -659,6 +664,9 @@ where
         }
         OpCode::OpEqz => {
             output.push_str("OpEqz");
+        }
+        OpCode::OpRem => {
+            output.push_str("OpRem");
         }
         OpCode::OpI64Add => {
             output.push_str("OpI64Add");
@@ -831,7 +839,7 @@ where
 
     let mut ip: usize = 0;
     let mut vm = VM::<T>::new();
-    
+
     // Initialize with template's variable counts (function calls will resize as needed)
     vm.stack_ff.resize_with(
         circuit.templates[component_tree.template_id].vars_ff_num, || None);
@@ -868,6 +876,12 @@ where
             OpCode::NoOp => (),
             OpCode::LoadSignal => {
                 let signal_idx = component_tree.signals_start + vm.pop_usize()?;
+                #[cfg(feature = "debug_vm2")]
+                {
+                    println!(
+                        "LoadSignal [S{}]: {}",
+                        signal_idx, signal_idx - component_tree.signals_start);
+                }
                 let s = signals.get(signal_idx)
                     .ok_or(RuntimeError::SignalIndexOutOfBounds)?
                     .ok_or(RuntimeError::SignalIsNotSet)?;
@@ -881,6 +895,13 @@ where
                 }
                 if signals[signal_idx].is_some() {
                     return Err(Box::new(RuntimeError::SignalIsAlreadySet));
+                }
+                #[cfg(feature = "debug_vm2")]
+                {
+                    println!(
+                        "StoreSignal [S{}]: {} = {}",
+                        signal_idx, signal_idx - component_tree.signals_start,
+                        vm.peek_ff()?);
                 }
                 signals[signal_idx] = Some(vm.pop_ff()?);
             }
@@ -975,6 +996,16 @@ where
                             Box::new(RuntimeError::UninitializedComponent))
                     }
                     Some(ref c) => {
+                        #[cfg(feature = "debug_vm2")]
+                        {
+                            let v = match signals[c.signals_start + sig_idx] {
+                                Some(v) => v.to_string(),
+                                None => "None".to_string(),
+                            };
+                            println!(
+                                "LoadCmpSignal [S{}]: {} = {}",
+                                c.signals_start + sig_idx, sig_idx, v);
+                        }
                         signals[c.signals_start + sig_idx].ok_or(RuntimeError::SignalIsNotSet)?
                     }
                 });
@@ -994,12 +1025,59 @@ where
                                 return Err(Box::new(RuntimeError::SignalIsAlreadySet));
                             }
                             None => {
-                                // println!("StoreCmpSignalAndRun, cmp_idx: {cmp_idx}, sig_idx: {sig_idx}, abs sig_idx: {}", c.signals_start + sig_idx);
                                 signals[c.signals_start + sig_idx] = Some(value);
                             }
                         }
                         c.number_of_inputs -= 1;
+                        #[cfg(feature = "debug_vm2")]
+                        {
+                            println!(
+                                "StoreCmpSignalAndRun [S{}]: {}[{}/{}] = {}, inputs left: {}, template: {}",
+                                c.signals_start + sig_idx, cmp_idx, c.signals_start, sig_idx, value,
+                                c.number_of_inputs, circuit.templates[c.template_id].name);
+                            println!(
+                                "StoreCmpSignalAndRun: Run component {}",
+                                cmp_idx);
+                        }
                         execute(circuit, signals, ff, c)?;
+                    }
+                }
+            }
+            OpCode::StoreCmpSignalCntCheck => {
+                let sig_idx = vm.pop_usize()?;
+                let cmp_idx = vm.pop_usize()?;
+                let value = vm.pop_ff()?;
+                match component_tree.components[cmp_idx] {
+                    None => {
+                        return Err(
+                            Box::new(RuntimeError::UninitializedComponent))
+                    }
+                    Some(ref mut c) => {
+                        match signals[c.signals_start + sig_idx] {
+                            Some(_) => {
+                                return Err(Box::new(RuntimeError::SignalIsAlreadySet));
+                            }
+                            None => {
+                                signals[c.signals_start + sig_idx] = Some(value);
+                            }
+                        }
+                        c.number_of_inputs -= 1;
+                        #[cfg(feature = "debug_vm2")]
+                        {
+                            println!(
+                                "StoreCmpSignalCntCheck [S{}]: {}[{}/{}] = {}, inputs left: {}, template: {}",
+                                c.signals_start + sig_idx, cmp_idx, c.signals_start, sig_idx, value,
+                                c.number_of_inputs, circuit.templates[c.template_id].name);
+                        }
+                        if c.number_of_inputs == 0 {
+                            #[cfg(feature = "debug_vm2")]
+                            {
+                                println!(
+                                    "StoreCmpSignalCntCheck: Run component {}",
+                                    cmp_idx);
+                            }
+                            execute(circuit, signals, ff, c)?;
+                        }
                     }
                 }
             }
@@ -1019,6 +1097,13 @@ where
                             }
                             None => {
                                 // println!("StoreCmpInput, cmp_idx: {cmp_idx}, sig_idx: {sig_idx}, abs sig_idx: {}", c.signals_start + sig_idx);
+                                #[cfg(feature = "debug_vm2")]
+                                {
+                                    println!(
+                                        "StoreCmpInput [S{}]: {}[{}/{}] = {}, inputs left: {}, template: {}",
+                                        c.signals_start + sig_idx, cmp_idx, c.signals_start, sig_idx, value,
+                                        c.number_of_inputs, circuit.templates[c.template_id].name);
+                                }
                                 signals[c.signals_start + sig_idx] = Some(value);
                             }
                         }
@@ -1271,6 +1356,11 @@ where
                 let lhs = vm.pop_ff()?;
                 let rhs = vm.pop_ff()?;
                 vm.push_ff(ff.band(lhs, rhs));
+            }
+            OpCode::OpRem => {
+                let lhs = vm.pop_ff()?;
+                let rhs = vm.pop_ff()?;
+                vm.push_ff(ff.modulo(lhs, rhs));
             }
         }
     }

@@ -11,7 +11,7 @@ use circom_witnesscalc::{ast, vm2, wtns_from_witness2};
 use circom_witnesscalc::ast::{Expr, FfExpr, I64Expr, Statement};
 use circom_witnesscalc::field::{bn254_prime, Field, FieldOperations, FieldOps, U254};
 use circom_witnesscalc::parser::parse;
-use circom_witnesscalc::vm2::{disassemble_instruction, execute, Circuit, Component, OpCode};
+use circom_witnesscalc::vm2::{disassemble_instruction, execute, Circuit, Component, OpCode, Template};
 
 struct WantWtns {
     wtns_file: String,
@@ -31,8 +31,8 @@ enum CompilationError {
     MainTemplateIDNotFound,
     #[error("witness signal index is out of bounds")]
     WitnessSignalIndexOutOfBounds,
-    #[error("witness signal is not set")]
-    WitnessSignalNotSet,
+    #[error("witness signal is not set: {0}")]
+    WitnessSignalNotSet(usize),
     #[error("incorrect SYM file format: `{0}`")]
     IncorrectSymFileFormat(String),
     #[error("jump offset is too large")]
@@ -159,7 +159,7 @@ fn main() {
         let ff = Field::new(bn254_prime);
         let circuit = compile(&ff, &program, &args.sym_file).unwrap();
         let mut component_tree = build_component_tree(
-            &program.templates, circuit.main_template_id);
+            &program.templates, circuit.main_template_id, &program.types);
         disassemble::<U254>(&circuit.templates);
         disassemble::<U254>(&circuit.functions);
         if args.want_wtns.is_some() {
@@ -217,7 +217,7 @@ fn input_signals_info(
 /// of self and all its children
 fn create_component(
     templates: &[ast::Template], template_id: usize,
-    signals_start: usize) -> (Component, usize) {
+    signals_start: usize, types: &[ast::Type]) -> (Component, usize) {
 
     let t = &templates[template_id];
     let mut next_signal_start = signals_start + t.signals_num;
@@ -227,7 +227,7 @@ fn create_component(
             None => None,
             Some( tmpl_id ) => {
                 let (c, signals_num) = create_component(
-                    templates, *tmpl_id, next_signal_start);
+                    templates, *tmpl_id, next_signal_start, types);
                 next_signal_start += signals_num;
                 Some(Box::new(c))
             }
@@ -238,16 +238,49 @@ fn create_component(
             signals_start,
             template_id,
             components,
-            number_of_inputs: t.outputs.len(),
+            number_of_inputs: t.number_of_inputs(types),
         },
         next_signal_start - signals_start
     )
 }
 
 fn build_component_tree(
-    templates: &[ast::Template], main_template_id: usize) -> Component {
+    templates: &[ast::Template], main_template_id: usize,
+    types: &[ast::Type]) -> Component {
 
-    create_component(templates, main_template_id, 1).0
+    create_component(templates, main_template_id, 1, types).0
+}
+
+/// Print component tree for debugging
+fn print_component_tree(component: &Component, templates: &[Template], indent: usize) {
+    let indent_str = "  ".repeat(indent);
+    let template_name = &templates[component.template_id].name;
+    
+    println!("Component: {} (signals_start: {}, inputs: {})",
+        template_name, component.signals_start, component.number_of_inputs);
+    
+    if !component.components.is_empty() {
+        println!("{}  subcomponents:", indent_str);
+        for (i, sub_component) in component.components.iter().enumerate() {
+            match sub_component {
+                Some(sub) => {
+                    print!("{}  [{}]: ", indent_str, i);
+                    print_component_tree(sub, templates, indent + 2);
+                }
+                None => {
+                    println!("{}  [{}]: -", indent_str, i);
+                }
+            }
+        }
+    }
+}
+
+/// Debug helper to print the entire component tree
+#[allow(dead_code)]
+fn debug_component_tree(component: &Component, templates: &[Template]) {
+    println!("\n=== Component Tree ===");
+    print_component_tree(component, templates, 0);
+    println!("===================\n");
 }
 
 fn calculate_witness<T: FieldOps>(
@@ -259,6 +292,7 @@ fn calculate_witness<T: FieldOps>(
     let mut signals = init_signals(
         &want_wtns.inputs_file, circuit.signals_num, &circuit.field,
         types, &input_infos)?;
+    debug_component_tree(component_tree, &circuit.templates);
     execute(circuit, &mut signals, &circuit.field, component_tree)?;
     let wtns_data = witness(
         &signals, &circuit.witness, circuit.field.prime)?;
@@ -767,7 +801,7 @@ fn witness<T: FieldOps>(signals: &[Option<T>], witness_signals: &[usize], prime:
 
         match signals[idx] {
             Some(s) => result.push(s),
-            None => return Err(CompilationError::WitnessSignalNotSet)
+            None => return Err(CompilationError::WitnessSignalNotSet(idx))
         }
     }
 
@@ -793,7 +827,7 @@ fn witness<T: FieldOps>(signals: &[Option<T>], witness_signals: &[usize], prime:
             Ok(wtns_from_witness2(vec_witness, prime))
         }
         _ => {
-            Err(CompilationError::WitnessSignalNotSet)
+            todo!()
         }
     }
 
@@ -1053,8 +1087,10 @@ where
             ff_expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpBand as u8);
         },
-        FfExpr::Rem(_lhs, _rhs) => {
-            todo!();
+        FfExpr::Rem(lhs, rhs) => {
+            ff_expression(ctx, ff, rhs)?;
+            ff_expression(ctx, ff, lhs)?;
+            ctx.code.push(OpCode::OpRem as u8);
         },
     };
     Ok(())
@@ -1134,8 +1170,11 @@ where
             ff_expression(ctx, ff, value)?;
             ctx.code.push(OpCode::StoreCmpSignalAndRun as u8);
         },
-        Statement::SetCmpInputCntCheck { .. } => {
-            todo!();
+        Statement::SetCmpInputCntCheck { cmp_idx, sig_idx, value } => {
+            operand_i64(ctx, cmp_idx);
+            operand_i64(ctx, sig_idx);
+            ff_expression(ctx, ff, value)?;
+            ctx.code.push(OpCode::StoreCmpSignalCntCheck as u8);
         },
         Statement::SetCmpInput { cmp_idx, sig_idx, value } => {
             i64_expression(ctx, ff, cmp_idx)?;
@@ -1578,7 +1617,7 @@ mod tests {
         let templates = vec![template1, template2, template3, template4, template5, template6, template7];
 
         // Build component tree with template7 (Root) as the main template
-        let component_tree = build_component_tree(&templates, 6);
+        let component_tree = build_component_tree(&templates, 6, &vec![]);
 
         // Verify the structure of the root component
         assert_eq!(component_tree.signals_start, 1);

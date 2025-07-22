@@ -212,6 +212,42 @@ pub struct Template {
     pub body: Vec<Statement>,
 }
 
+impl Template {
+    pub fn number_of_inputs(&self, types: &[Type]) -> usize {
+        let mut count = 0;
+        for signal in &self.inputs {
+            count += self.calculate_signal_size(signal, types);
+        }
+        count
+    }
+
+    fn calculate_signal_size(&self, signal: &Signal, types: &[Type]) -> usize {
+        match signal {
+            Signal::Ff(dims) => {
+                if dims.is_empty() { 1 } else { dims.iter().product() }
+            }
+            Signal::Bus(bus_type, dims) => {
+                if let Some(type_def) = types.iter().find(|t| t.name == *bus_type) {
+                    let base_size = self.calculate_bus_size(type_def);
+                    if dims.is_empty() { base_size } else { base_size * dims.iter().product::<usize>() }
+                } else {
+                    // If type not found, return 0 (this shouldn't happen in valid code)
+                    0
+                }
+            }
+        }
+    }
+
+    fn calculate_bus_size(&self, bus_type: &Type) -> usize {
+        let mut total_size = 0;
+        for field in &bus_type.fields {
+            // The size field already contains the total size for this field
+            total_size += field.size;
+        }
+        total_size
+    }
+}
+
 #[cfg_attr(test, derive(PartialEq, Debug))]
 pub struct Function {
     pub name: String,
@@ -372,4 +408,93 @@ pub struct AST {
     pub types: Vec<Type>,
     pub functions: Vec<Function>,
     pub templates: Vec<Template>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_number_of_inputs() {
+        // Create some test types
+        let types = vec![
+            Type {
+                name: "bus_0".to_string(),
+                fields: vec![
+                    TypeField {
+                        name: "x".to_string(),
+                        kind: TypeFieldKind::Ff,
+                        offset: 0,
+                        size: 1,
+                        dims: vec![],
+                    },
+                    TypeField {
+                        name: "y".to_string(),
+                        kind: TypeFieldKind::Ff,
+                        offset: 1,
+                        size: 1,
+                        dims: vec![],
+                    },
+                ],
+            },
+        ];
+
+        // Test 1: Single Ff signal
+        let template = Template {
+            name: "Test1".to_string(),
+            outputs: vec![],
+            inputs: vec![Signal::Ff(vec![])],
+            signals_num: 2,
+            components: vec![],
+            body: vec![],
+        };
+        assert_eq!(template.number_of_inputs(&types), 1);
+
+        // Test 2: Array of Ff signals
+        let template = Template {
+            name: "Test2".to_string(),
+            outputs: vec![],
+            inputs: vec![Signal::Ff(vec![3, 2])],
+            signals_num: 7,
+            components: vec![],
+            body: vec![],
+        };
+        assert_eq!(template.number_of_inputs(&types), 6);
+
+        // Test 3: Bus signal
+        let template = Template {
+            name: "Test3".to_string(),
+            outputs: vec![],
+            inputs: vec![Signal::Bus("bus_0".to_string(), vec![])],
+            signals_num: 3,
+            components: vec![],
+            body: vec![],
+        };
+        assert_eq!(template.number_of_inputs(&types), 2);
+
+        // Test 4: Array of bus signals
+        let template = Template {
+            name: "Test4".to_string(),
+            outputs: vec![],
+            inputs: vec![Signal::Bus("bus_0".to_string(), vec![3])],
+            signals_num: 7,
+            components: vec![],
+            body: vec![],
+        };
+        assert_eq!(template.number_of_inputs(&types), 6);
+
+        // Test 5: Multiple inputs
+        let template = Template {
+            name: "Test5".to_string(),
+            outputs: vec![],
+            inputs: vec![
+                Signal::Ff(vec![2]),
+                Signal::Bus("bus_0".to_string(), vec![2]),
+            ],
+            signals_num: 7,
+            components: vec![],
+            body: vec![],
+        };
+        assert_eq!(template.number_of_inputs(&types), 6); // 2 + 2*2
+    }
 }

@@ -2,7 +2,7 @@ use std::{env, fs, process};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs::File;
-use std::io::{BufRead, Write};
+use std::io::{Write};
 use std::path::Path;
 use num_bigint::BigUint;
 use num_traits::{Num, ToBytes};
@@ -157,9 +157,9 @@ fn main() {
     let bn254 = BigUint::from_str_radix("21888242871839275222246405745257275088548364400416034343698204186575808495617", 10).unwrap();
     if program.prime == bn254 {
         let ff = Field::new(bn254_prime);
-        let circuit = compile(&ff, &program, &args.sym_file).unwrap();
+        let circuit = compile(&ff, &program).unwrap();
         let mut component_tree = build_component_tree(
-            &program.templates, circuit.main_template_id, &program.types);
+            circuit.main_template_id, &circuit.templates);
         disassemble::<U254>(&circuit.templates);
         disassemble::<U254>(&circuit.functions);
         if args.want_wtns.is_some() {
@@ -168,9 +168,10 @@ fn main() {
             let input_infos = build_input_info_from_sym(
                 &sym_content, circuit.main_template_id, main_template,
                 &program.types).unwrap();
+            let vm_types: Vec<vm2::Type> = program.types.iter().map(Into::into).collect();
             calculate_witness(
                 &circuit, &mut component_tree, args.want_wtns.unwrap(),
-                &input_infos, &program.types).unwrap();
+                &input_infos, &vm_types).unwrap();
         }
     } else {
         eprintln!("ERROR: Unsupported prime field");
@@ -182,46 +183,13 @@ fn main() {
         args.output_file);
 }
 
-fn input_signals_info(
-    sym_file: &str,
-    main_template_id: usize) -> Result<HashMap<String, usize>, Box<dyn Error>> {
-
-    let mut m: HashMap<String, usize> = HashMap::new();
-    let file = File::open(Path::new(sym_file))?;
-    let reader = std::io::BufReader::new(file);
-    for line in reader.lines() {
-        let line = line?;
-        let values: Vec<&str> = line.split(',').collect();
-        if values.len() != 4 {
-            return Err(Box::new(CompilationError::IncorrectSymFileFormat(
-                format!("line should consist of 4 values: {}", line))));
-        }
-
-        let node_id = values[2].parse::<usize>()
-            .map_err(|e| Box::new(
-                CompilationError::IncorrectSymFileFormat(
-                    format!("node_id should be a number: {}", e))))?;
-        if node_id != main_template_id {
-            continue
-        }
-
-        let signal_idx = values[0].parse::<usize>()
-            .map_err(|e| Box::new(
-                CompilationError::IncorrectSymFileFormat(
-                    format!("signal_idx should be a number: {}", e))))?;
-
-        m.insert(values[3].to_string(), signal_idx);
-    }
-    Ok(m)
-}
-
 /// Create a component tree and returns the component and the number of signals
 /// of self and all its children
 fn create_component(
-    templates: &[ast::Template], template_id: usize,
-    signals_start: usize, types: &[ast::Type]) -> (Component, usize) {
+    template_id: usize,
+    signals_start: usize, vm_templates: &[vm2::Template]) -> (Component, usize) {
 
-    let t = &templates[template_id];
+    let t = &vm_templates[template_id];
     let mut next_signal_start = signals_start + t.signals_num;
     let mut components = Vec::with_capacity(t.components.len());
     for cmp_tmpl_id in t.components.iter() {
@@ -229,7 +197,7 @@ fn create_component(
             None => None,
             Some( tmpl_id ) => {
                 let (c, signals_num) = create_component(
-                    templates, *tmpl_id, next_signal_start, types);
+                    *tmpl_id, next_signal_start, vm_templates);
                 next_signal_start += signals_num;
                 Some(Box::new(c))
             }
@@ -240,17 +208,16 @@ fn create_component(
             signals_start,
             template_id,
             components,
-            number_of_inputs: t.number_of_inputs(types),
+            number_of_inputs: t.number_of_inputs,
         },
         next_signal_start - signals_start
     )
 }
 
 fn build_component_tree(
-    templates: &[ast::Template], main_template_id: usize,
-    types: &[ast::Type]) -> Component {
+    main_template_id: usize, vm_templates: &[vm2::Template]) -> Component {
 
-    create_component(templates, main_template_id, 1, types).0
+    create_component(main_template_id, 1, vm_templates).0
 }
 
 /// Print component tree for debugging
@@ -288,7 +255,7 @@ fn debug_component_tree(component: &Component, templates: &[Template]) {
 fn calculate_witness<T: FieldOps>(
     circuit: &Circuit<T>, component_tree: &mut Component,
     want_wtns: WantWtns, input_infos: &[InputInfo],
-    types: &[ast::Type]) -> Result<(), Box<dyn Error>> {
+    types: &[vm2::Type]) -> Result<(), Box<dyn Error>> {
 
     let mut signals = init_signals(
         &want_wtns.inputs_file, circuit.signals_num, &circuit.field,
@@ -585,7 +552,7 @@ fn calculate_bus_size(bus_type: &ast::Type, _all_types: &[ast::Type]) -> usize {
 /// Expand an InputInfo into all its constituent signal paths with their indices
 fn expand_input_info_to_signal_paths(
     input_info: &InputInfo,
-    types: &[ast::Type]
+    types: &[vm2::Type]
 ) -> Result<Vec<(String, usize)>, Box<dyn Error>> {
     let mut paths = Vec::new();
     let mut current_offset = input_info.offset;
@@ -632,8 +599,8 @@ fn expand_input_info_to_signal_paths(
 /// Recursively expand a bus type into individual field paths
 fn expand_bus_type(
     base_path: &str,
-    bus_type: &ast::Type,
-    types: &[ast::Type],
+    bus_type: &vm2::Type,
+    types: &[vm2::Type],
     current_offset: &mut usize,
     paths: &mut Vec<(String, usize)>
 ) -> Result<(), Box<dyn Error>> {
@@ -641,7 +608,7 @@ fn expand_bus_type(
         let field_path = format!("{}.{}", base_path, field.name);
 
         match &field.kind {
-            ast::TypeFieldKind::Bus(bus_type_name) => {
+            vm2::TypeFieldKind::Bus(bus_type_name) => {
                 // This field is another bus type
                 let field_type = types.iter().find(|t| t.name == *bus_type_name)
                     .ok_or_else(|| Box::new(CompilationError::BusTypeNotFound(bus_type_name.to_string())))?;
@@ -658,7 +625,7 @@ fn expand_bus_type(
                     }
                 }
             },
-            ast::TypeFieldKind::Ff => {
+            vm2::TypeFieldKind::Ff => {
                 // This field is a primitive type (ff)
                 if field.dims.is_empty() {
                     // Single field
@@ -729,7 +696,7 @@ fn try_convert_flat_to_multidim_path(
 }
 
 fn init_signals<T: FieldOps, F>(
-    inputs_file: &str, signals_num: usize, ff: &F, types: &[ast::Type],
+    inputs_file: &str, signals_num: usize, ff: &F, types: &[vm2::Type],
     input_infos: &[InputInfo]) -> Result<Vec<Option<T>>, Box<dyn Error>>
 where
     for <'a> &'a F: FieldOperations<Type = T> {
@@ -848,7 +815,7 @@ fn disassemble<T: FieldOps>(templates: &[vm2::Template]) {
 }
 
 fn compile<T: FieldOps>(
-    ff: &Field<T>, tree: &ast::AST, sym_file: &str) -> Result<Circuit<T>, Box<dyn Error>>
+    ff: &Field<T>, tree: &ast::AST) -> Result<Circuit<T>, Box<dyn Error>>
 where {
 
     // First, compile functions and build function registry
@@ -865,7 +832,8 @@ where {
     let mut templates = Vec::new();
 
     for t in tree.templates.iter() {
-        let compiled_template = compile_template(t, ff, &function_registry)?;
+        let compiled_template = compile_template(
+            t, ff, &function_registry, &tree.types)?;
         templates.push(compiled_template);
         // println!("Template: {}", t.name);
         // println!("Compiled code len: {}", compiled_template.code.len());
@@ -888,7 +856,6 @@ where {
         function_registry,
         field: ff.clone(),
         witness: tree.witness.clone(),
-        input_signals_info: input_signals_info(sym_file, main_template_id)?,
         signals_num: tree.signals,
     })
 }
@@ -1493,6 +1460,9 @@ where
         code: ctx.code,
         vars_i64_num: ctx.i64_variable_indexes.len(),
         vars_ff_num: ctx.ff_variable_indexes.len(),
+        signals_num: 0,
+        number_of_inputs: 0,
+        components: Vec::new(),
         ff_variable_names,
         i64_variable_names,
     })
@@ -1501,7 +1471,8 @@ where
 fn compile_template<F>(
     t: &ast::Template, 
     ff: &F, 
-    function_registry: &HashMap<String, usize>
+    function_registry: &HashMap<String, usize>,
+    types: &[ast::Type],
 ) -> Result<vm2::Template, Box<dyn Error>>
 where
     for <'a> &'a F: FieldOperations {
@@ -1527,6 +1498,9 @@ where
         code: ctx.code,
         vars_i64_num: ctx.i64_variable_indexes.len(),
         vars_ff_num: ctx.ff_variable_indexes.len(),
+        signals_num: t.signals_num,
+        number_of_inputs: t.number_of_inputs(types),
+        components: t.components.clone(),
         ff_variable_names,
         i64_variable_names,
     })
@@ -1615,10 +1589,18 @@ mod tests {
             body: vec![],
         };
 
-        let templates = vec![template1, template2, template3, template4, template5, template6, template7];
+        let ast_templates = vec![
+            template1, template2, template3, template4, template5, template6,
+            template7];
+        let ff = Field::new(bn254_prime);
+        let function_registry = HashMap::new();
+        let vm_templates = ast_templates.iter()
+            .map(|t| compile_template(
+                t, &ff, &function_registry, &[]).unwrap())
+            .collect::<Vec<_>>();
 
         // Build component tree with template7 (Root) as the main template
-        let component_tree = build_component_tree(&templates, 6, &[]);
+        let component_tree = build_component_tree(6, &vm_templates);
 
         // Verify the structure of the root component
         assert_eq!(component_tree.signals_start, 1);
@@ -1688,7 +1670,8 @@ mod tests {
         };
         let ff = Field::new(bn254_prime);
         let function_registry = HashMap::new();
-        let vm_tmpl = compile_template(&ast_tmpl, &ff, &function_registry).unwrap();
+        let vm_tmpl = compile_template(
+            &ast_tmpl, &ff, &function_registry, &[]).unwrap();
 
         let want_output = "00000000 [Multiplier_0] PushI64: 1
 00000009 [Multiplier_0] LoadSignal
@@ -2471,12 +2454,14 @@ x_0 = get_signal i64.1
             &program.templates[main_template_id],
             &program.types).unwrap();
 
+        // Convert ast::Type to vm2::Type
+        let vm_types: Vec<vm2::Type> = program.types.iter().map(Into::into).collect();
         // Call init_signals with the new signature
         let result = init_signals::<U254, _>(
             inputs_path.to_string_lossy().as_ref(),
             44, // signals_num
             &field,
-            &program.types,
+            &vm_types,
             &input_infos,
         ).unwrap();
 
@@ -2554,12 +2539,14 @@ x_0 = get_signal i64.1
             &program.templates[main_template_id],
             &program.types).unwrap();
 
+        // Convert ast::Type to vm2::Type
+        let vm_types: Vec<vm2::Type> = program.types.iter().map(Into::into).collect();
         // Call init_signals with the new signature
         let result = init_signals::<U254, _>(
             inputs_path.to_string_lossy().as_ref(),
             19, // signals_num
             &field,
-            &program.types,
+            &vm_types,
             &input_infos,
         ).unwrap();
 

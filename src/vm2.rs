@@ -137,7 +137,6 @@ pub struct Circuit<T: FieldOps> {
     pub function_registry: HashMap<String, usize>, // Function name -> index mapping
     pub field: Field<T>,
     pub witness: Vec<usize>,
-    pub input_signals_info: HashMap<String, usize>, // TODO: maybe remove
     pub signals_num: usize,
 }
 
@@ -146,6 +145,9 @@ pub struct Template {
     pub code: Vec<u8>,
     pub vars_i64_num: usize,
     pub vars_ff_num: usize,
+    pub signals_num: usize,
+    pub number_of_inputs: usize,
+    pub components: Vec<Option<usize>>,
     // Variable name mappings for debugging
     pub ff_variable_names: HashMap<usize, String>,
     pub i64_variable_names: HashMap<usize, String>,
@@ -1366,6 +1368,51 @@ where
     }
 
     Ok(())
+}
+
+#[derive(Debug, Clone)]
+pub struct Type {
+    pub name: String,
+    pub fields: Vec<TypeField>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TypeField {
+    pub name: String,
+    pub kind: TypeFieldKind,
+    pub offset: usize,
+    pub size: usize,
+    pub dims: Vec<usize>,
+}
+
+#[derive(Debug, Clone)]
+pub enum TypeFieldKind {
+    Ff,
+    Bus(String),
+}
+
+impl From<&crate::ast::Type> for Type {
+    fn from(ast_type: &crate::ast::Type) -> Self {
+        Type {
+            name: ast_type.name.clone(),
+            fields: ast_type.fields.iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<&crate::ast::TypeField> for TypeField {
+    fn from(ast_field: &crate::ast::TypeField) -> Self {
+        TypeField {
+            name: ast_field.name.clone(),
+            kind: match &ast_field.kind {
+                crate::ast::TypeFieldKind::Ff => TypeFieldKind::Ff,
+                crate::ast::TypeFieldKind::Bus(name) => TypeFieldKind::Bus(name.clone()),
+            },
+            offset: ast_field.offset,
+            size: ast_field.size,
+            dims: ast_field.dims.clone(),
+        }
+    }
 }
 
 #[cfg(test)]

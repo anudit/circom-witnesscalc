@@ -164,10 +164,8 @@ fn main() {
         disassemble::<U254>(&circuit.templates);
         disassemble::<U254>(&circuit.functions);
         if args.want_wtns.is_some() {
-            let vm_types: Vec<vm2::Type> = program.types.iter().map(Into::into).collect();
             calculate_witness(
-                &circuit, &mut component_tree, args.want_wtns.unwrap(),
-                &vm_types).unwrap();
+                &circuit, &mut component_tree, args.want_wtns.unwrap()).unwrap();
         }
     } else {
         eprintln!("ERROR: Unsupported prime field");
@@ -250,12 +248,11 @@ fn debug_component_tree(component: &Component, templates: &[Template]) {
 
 fn calculate_witness<T: FieldOps>(
     circuit: &Circuit<T>, component_tree: &mut Component,
-    want_wtns: WantWtns,
-    types: &[vm2::Type]) -> Result<(), Box<dyn Error>> {
+    want_wtns: WantWtns) -> Result<(), Box<dyn Error>> {
 
     let mut signals = init_signals(
         &want_wtns.inputs_file, circuit.signals_num, &circuit.field,
-        types, &circuit.input_infos)?;
+        &circuit.types, &circuit.input_infos)?;
     debug_component_tree(component_tree, &circuit.templates);
     execute(circuit, &mut signals, &circuit.field, component_tree)?;
     let wtns_data = witness(
@@ -842,6 +839,9 @@ where {
     let main_template = &tree.templates[main_template_id];
     let input_infos = build_input_info_from_sym(
         sym_content, main_template_id, main_template, &tree.types)?;
+    
+    // Convert ast::Type to vm2::Type
+    let types: Vec<vm2::Type> = tree.types.iter().map(Into::into).collect();
 
     Ok(Circuit {
         main_template_id,
@@ -852,6 +852,7 @@ where {
         witness: tree.witness.clone(),
         signals_num: tree.signals,
         input_infos,
+        types,
     })
 }
 
@@ -2439,10 +2440,7 @@ x_0 = get_signal i64.1
         let inputs_path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/cvm-compile/data/test_init_signals__inputs.json");
 
-        // Convert ast::Type to vm2::Type
-        let vm_types: Vec<vm2::Type> = program.types.iter().map(Into::into).collect();
-        
-        // Create circuit with input_infos built inside compile
+        // Create circuit with input_infos and types built inside compile
         let circuit = compile(&field, &program, sym_content).unwrap();
 
         // Call init_signals with the new signature
@@ -2450,7 +2448,7 @@ x_0 = get_signal i64.1
             inputs_path.to_string_lossy().as_ref(),
             44, // signals_num
             &field,
-            &vm_types,
+            &circuit.types,
             &circuit.input_infos,
         ).unwrap();
 
@@ -2518,10 +2516,7 @@ x_0 = get_signal i64.1
         let inputs_path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/cvm-compile/data/test_array_inputs__inputs.json");
 
-        // Convert ast::Type to vm2::Type
-        let vm_types: Vec<vm2::Type> = program.types.iter().map(Into::into).collect();
-        
-        // Create circuit with input_infos built inside compile
+        // Create circuit with input_infos and types built inside compile
         let circuit = compile(&field, &program, sym_content).unwrap();
 
         // Call init_signals with the new signature
@@ -2529,7 +2524,7 @@ x_0 = get_signal i64.1
             inputs_path.to_string_lossy().as_ref(),
             19, // signals_num
             &field,
-            &vm_types,
+            &circuit.types,
             &circuit.input_infos,
         ).unwrap();
 

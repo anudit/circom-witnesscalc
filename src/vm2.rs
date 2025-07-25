@@ -147,6 +147,7 @@ pub struct Circuit<T: FieldOps> {
     pub witness: Vec<usize>,
     pub signals_num: usize,
     pub input_infos: Vec<InputInfo>,
+    pub types: Vec<Type>,
 }
 
 pub struct Template {

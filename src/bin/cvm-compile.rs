@@ -159,13 +159,10 @@ fn main() {
         let ff = Field::new(bn254_prime);
         let sym_content = fs::read_to_string(&args.sym_file).unwrap();
         let circuit = compile(&ff, &program, &sym_content).unwrap();
-        let mut component_tree = build_component_tree(
-            circuit.main_template_id, &circuit.templates);
         disassemble::<U254>(&circuit.templates);
         disassemble::<U254>(&circuit.functions);
         if args.want_wtns.is_some() {
-            calculate_witness(
-                &circuit, &mut component_tree, args.want_wtns.unwrap()).unwrap();
+            calculate_witness(&circuit, args.want_wtns.unwrap()).unwrap();
         }
     } else {
         eprintln!("ERROR: Unsupported prime field");
@@ -247,20 +244,24 @@ fn debug_component_tree(component: &Component, templates: &[Template]) {
 }
 
 fn calculate_witness<T: FieldOps>(
-    circuit: &Circuit<T>, component_tree: &mut Component,
-    want_wtns: WantWtns) -> Result<(), Box<dyn Error>> {
+    circuit: &Circuit<T>, want_wtns: WantWtns) -> Result<(), Box<dyn Error>> {
 
     let mut signals = init_signals(
         &want_wtns.inputs_file, circuit.signals_num, &circuit.field,
         &circuit.types, &circuit.input_infos)?;
-    debug_component_tree(component_tree, &circuit.templates);
-    execute(circuit, &mut signals, &circuit.field, component_tree)?;
+
+    let mut component_tree = build_component_tree(
+        circuit.main_template_id, &circuit.templates);
+    debug_component_tree(&component_tree, &circuit.templates);
+
+    execute(circuit, &mut signals, &circuit.field, &mut component_tree)?;
+
     let wtns_data = witness(
         &signals, &circuit.witness, circuit.field.prime)?;
-
     let mut file = File::create(Path::new(&want_wtns.wtns_file))?;
     file.write_all(&wtns_data)?;
     file.flush()?;
+
     println!("Witness saved to {}", want_wtns.wtns_file);
     Ok(())
 }

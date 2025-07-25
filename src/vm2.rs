@@ -2,6 +2,14 @@ use std::collections::HashMap;
 use std::error::Error;
 use crate::field::{Field, FieldOperations, FieldOps};
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct InputInfo {
+    pub name: String,
+    pub offset: usize,
+    pub lengths: Vec<usize>,
+    pub type_id: Option<String>,
+}
+
 #[repr(u8)]
 #[derive(Debug)]
 pub enum OpCode {
@@ -138,6 +146,7 @@ pub struct Circuit<T: FieldOps> {
     pub field: Field<T>,
     pub witness: Vec<usize>,
     pub signals_num: usize,
+    pub input_infos: Vec<InputInfo>,
 }
 
 pub struct Template {

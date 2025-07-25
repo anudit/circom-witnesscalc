@@ -11,7 +11,7 @@ use circom_witnesscalc::{ast, vm2, wtns_from_witness2};
 use circom_witnesscalc::ast::{Expr, FfExpr, I64Expr, Statement};
 use circom_witnesscalc::field::{bn254_prime, Field, FieldOperations, FieldOps, U254};
 use circom_witnesscalc::parser::parse;
-use circom_witnesscalc::vm2::{disassemble_instruction, execute, Circuit, Component, OpCode, Template};
+use circom_witnesscalc::vm2::{disassemble_instruction, execute, Circuit, Component, OpCode, Template, InputInfo};
 
 struct WantWtns {
     wtns_file: String,
@@ -157,21 +157,17 @@ fn main() {
     let bn254 = BigUint::from_str_radix("21888242871839275222246405745257275088548364400416034343698204186575808495617", 10).unwrap();
     if program.prime == bn254 {
         let ff = Field::new(bn254_prime);
-        let circuit = compile(&ff, &program).unwrap();
+        let sym_content = fs::read_to_string(&args.sym_file).unwrap();
+        let circuit = compile(&ff, &program, &sym_content).unwrap();
         let mut component_tree = build_component_tree(
             circuit.main_template_id, &circuit.templates);
         disassemble::<U254>(&circuit.templates);
         disassemble::<U254>(&circuit.functions);
         if args.want_wtns.is_some() {
-            let sym_content = fs::read_to_string(&args.sym_file).unwrap();
-            let main_template = &program.templates[circuit.main_template_id];
-            let input_infos = build_input_info_from_sym(
-                &sym_content, circuit.main_template_id, main_template,
-                &program.types).unwrap();
             let vm_types: Vec<vm2::Type> = program.types.iter().map(Into::into).collect();
             calculate_witness(
                 &circuit, &mut component_tree, args.want_wtns.unwrap(),
-                &input_infos, &vm_types).unwrap();
+                &vm_types).unwrap();
         }
     } else {
         eprintln!("ERROR: Unsupported prime field");
@@ -254,12 +250,12 @@ fn debug_component_tree(component: &Component, templates: &[Template]) {
 
 fn calculate_witness<T: FieldOps>(
     circuit: &Circuit<T>, component_tree: &mut Component,
-    want_wtns: WantWtns, input_infos: &[InputInfo],
+    want_wtns: WantWtns,
     types: &[vm2::Type]) -> Result<(), Box<dyn Error>> {
 
     let mut signals = init_signals(
         &want_wtns.inputs_file, circuit.signals_num, &circuit.field,
-        types, input_infos)?;
+        types, &circuit.input_infos)?;
     debug_component_tree(component_tree, &circuit.templates);
     execute(circuit, &mut signals, &circuit.field, component_tree)?;
     let wtns_data = witness(
@@ -354,13 +350,6 @@ where
     Ok(())
 }
 
-#[derive(Debug, Clone, PartialEq)]
-struct InputInfo {
-    name: String,
-    offset: usize,
-    lengths: Vec<usize>,
-    type_id: Option<String>,
-}
 
 
 #[derive(Debug)]
@@ -815,7 +804,7 @@ fn disassemble<T: FieldOps>(templates: &[vm2::Template]) {
 }
 
 fn compile<T: FieldOps>(
-    ff: &Field<T>, tree: &ast::AST) -> Result<Circuit<T>, Box<dyn Error>>
+    ff: &Field<T>, tree: &ast::AST, sym_content: &str) -> Result<Circuit<T>, Box<dyn Error>>
 where {
 
     // First, compile functions and build function registry
@@ -848,6 +837,11 @@ where {
 
     let main_template_id = main_template_id
         .ok_or(CompilationError::MainTemplateIDNotFound)?;
+    
+    // Build input info from sym content
+    let main_template = &tree.templates[main_template_id];
+    let input_infos = build_input_info_from_sym(
+        sym_content, main_template_id, main_template, &tree.types)?;
 
     Ok(Circuit {
         main_template_id,
@@ -857,6 +851,7 @@ where {
         field: ff.clone(),
         witness: tree.witness.clone(),
         signals_num: tree.signals,
+        input_infos,
     })
 }
 
@@ -2439,30 +2434,24 @@ x_0 = get_signal i64.1
 
         let program = parse(cvm_content).unwrap();
 
-        // Find the main template ID
-        let main_template_id = program.templates.iter()
-            .position(|t| t.name == program.start)
-            .unwrap();
-
         let field = Field::new(bn254_prime);
 
         let inputs_path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/cvm-compile/data/test_init_signals__inputs.json");
 
-        let input_infos = build_input_info_from_sym(
-            sym_content, main_template_id,
-            &program.templates[main_template_id],
-            &program.types).unwrap();
-
         // Convert ast::Type to vm2::Type
         let vm_types: Vec<vm2::Type> = program.types.iter().map(Into::into).collect();
+        
+        // Create circuit with input_infos built inside compile
+        let circuit = compile(&field, &program, sym_content).unwrap();
+
         // Call init_signals with the new signature
         let result = init_signals::<U254, _>(
             inputs_path.to_string_lossy().as_ref(),
             44, // signals_num
             &field,
             &vm_types,
-            &input_infos,
+            &circuit.input_infos,
         ).unwrap();
 
         // Expected result
@@ -2524,30 +2513,24 @@ x_0 = get_signal i64.1
 
         let program = parse(cvm_content).unwrap();
 
-        // Find the main template ID
-        let main_template_id = program.templates.iter()
-            .position(|t| t.name == program.start)
-            .unwrap();
-
         let field = Field::new(bn254_prime);
 
         let inputs_path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/cvm-compile/data/test_array_inputs__inputs.json");
 
-        let input_infos = build_input_info_from_sym(
-            sym_content, main_template_id,
-            &program.templates[main_template_id],
-            &program.types).unwrap();
-
         // Convert ast::Type to vm2::Type
         let vm_types: Vec<vm2::Type> = program.types.iter().map(Into::into).collect();
+        
+        // Create circuit with input_infos built inside compile
+        let circuit = compile(&field, &program, sym_content).unwrap();
+
         // Call init_signals with the new signature
         let result = init_signals::<U254, _>(
             inputs_path.to_string_lossy().as_ref(),
             19, // signals_num
             &field,
             &vm_types,
-            &input_infos,
+            &circuit.input_infos,
         ).unwrap();
 
         // Expected result

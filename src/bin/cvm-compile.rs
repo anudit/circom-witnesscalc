@@ -165,10 +165,12 @@ fn main() {
         if args.want_wtns.is_some() {
             let sym_content = fs::read_to_string(&args.sym_file).unwrap();
             let main_template = &program.templates[circuit.main_template_id];
+            let input_infos = build_input_info_from_sym(
+                &sym_content, circuit.main_template_id, main_template,
+                &program.types).unwrap();
             calculate_witness(
                 &circuit, &mut component_tree, args.want_wtns.unwrap(),
-                &sym_content, main_template, &program.types)
-                .unwrap();
+                &input_infos, &program.types).unwrap();
         }
     } else {
         eprintln!("ERROR: Unsupported prime field");
@@ -255,7 +257,7 @@ fn build_component_tree(
 fn print_component_tree(component: &Component, templates: &[Template], indent: usize) {
     let indent_str = "  ".repeat(indent);
     let template_name = &templates[component.template_id].name;
-    
+
     println!("Component: {} (signals_start: {}, inputs: {})",
         template_name, component.signals_start, component.number_of_inputs);
     
@@ -285,13 +287,12 @@ fn debug_component_tree(component: &Component, templates: &[Template]) {
 
 fn calculate_witness<T: FieldOps>(
     circuit: &Circuit<T>, component_tree: &mut Component,
-    want_wtns: WantWtns, sym_content: &str, main_template: &ast::Template,
+    want_wtns: WantWtns, input_infos: &[InputInfo],
     types: &[ast::Type]) -> Result<(), Box<dyn Error>> {
 
-    let input_infos = build_input_info_from_sym(sym_content, circuit.main_template_id, main_template, types)?;
     let mut signals = init_signals(
         &want_wtns.inputs_file, circuit.signals_num, &circuit.field,
-        types, &input_infos)?;
+        types, input_infos)?;
     debug_component_tree(component_tree, &circuit.templates);
     execute(circuit, &mut signals, &circuit.field, component_tree)?;
     let wtns_data = witness(
@@ -1617,7 +1618,7 @@ mod tests {
         let templates = vec![template1, template2, template3, template4, template5, template6, template7];
 
         // Build component tree with template7 (Root) as the main template
-        let component_tree = build_component_tree(&templates, 6, &vec![]);
+        let component_tree = build_component_tree(&templates, 6, &[]);
 
         // Verify the structure of the root component
         assert_eq!(component_tree.signals_start, 1);

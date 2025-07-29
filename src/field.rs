@@ -23,6 +23,9 @@ impl U64 {
     pub fn as_le_slice(&self) -> Vec<u8> {
         self.0.to_le_bytes().to_vec()
     }
+    pub fn new(value: u64) -> Self {
+        U64(value)
+    }
 }
 
 impl TryInto<isize> for U64 {

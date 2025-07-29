@@ -3,14 +3,16 @@ use std::collections::{BTreeMap, HashMap};
 use std::fmt::{Debug, Formatter};
 use std::io::{Error, ErrorKind, Read, Write};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use num_bigint::BigUint;
 use prost::Message;
 use ruint::aliases::U256;
-use crate::field::{FieldOps, U254};
+use crate::field::{FieldOps, U254, Field};
 use crate::graph::{Nodes, NodesInterface, NodesStorage, Operation, TresOperation, UnoOperation, VecNodes};
 use crate::InputSignalsInfo;
 use crate::proto::SignalDescription;
 use crate::proto::vm::{IoDef, IoDefs};
 use crate::vm::{Function, Template};
+use crate::vm2;
 // format of the wtns.graph file:
 // + magic line: wtns.graph.001
 // + 4 bytes unsigned LE 32-bit integer: number of nodes
@@ -22,6 +24,7 @@ pub mod proto_deserializer;
 
 const WITNESSCALC_GRAPH_MAGIC: &[u8] = b"wtns.graph.001";
 const WITNESSCALC_VM_MAGIC: &[u8] = b"wtns.vm.001";
+const WITNESSCALC_CVM_MAGIC: &[u8] = b"wtns.cvm.001";
 
 const MAX_VARINT_LENGTH: usize = 10;
 
@@ -540,11 +543,12 @@ pub fn init_input_signals(
 
 #[cfg(test)]
 mod tests {
+    use num_traits::Num;
     use std::collections::HashMap;
     use crate::graph::{Node, Operation, TresOperation, UnoOperation};
     use byteorder::ByteOrder;
     use crate::vm::ComponentTmpl;
-    use crate::field::{FieldOperations, U254};
+    use crate::field::{bn254_prime, FieldOperations, U254, U64};
     use crate::storage::proto_deserializer::deserialize_witnesscalc_graph_from_bytes;
     use super::*;
 
@@ -795,4 +799,735 @@ mod tests {
 
         assert_eq!(format!("{:?}", cs), format!("{:?}", cs2));
     }
+
+    #[test]
+    fn test_vm2_serialization() {
+        let prime = BigUint::from_str_radix(
+            "21888242871839275222246405745257275088548364400416034343698204186575808495617",
+            10).unwrap();
+        let ff = Field::new(bn254_prime);
+
+        let circuit = vm2::Circuit {
+            main_template_id: 0,
+            templates: vec![
+                vm2::Template {
+                    name: "main".to_string(),
+                    code: vec![1, 2, 3, 4, 5],
+                    vars_i64_num: 2,
+                    vars_ff_num: 3,
+                    signals_num: 5,
+                    number_of_inputs: 2,
+                    components: vec![Some(1), None, Some(2)],
+                    ff_variable_names: HashMap::new(),
+                    i64_variable_names: HashMap::new(),
+                },
+                vm2::Template {
+                    name: "sub_template".to_string(),
+                    code: vec![10, 20, 30],
+                    vars_i64_num: 1,
+                    vars_ff_num: 1,
+                    signals_num: 3,
+                    number_of_inputs: 1,
+                    components: vec![],
+                    ff_variable_names: HashMap::new(),
+                    i64_variable_names: HashMap::new(),
+                },
+            ],
+            functions: vec![
+                vm2::Template {
+                    name: "add".to_string(),
+                    code: vec![100, 101, 102],
+                    vars_i64_num: 0,
+                    vars_ff_num: 2,
+                    signals_num: 0,
+                    number_of_inputs: 2,
+                    components: vec![],
+                    ff_variable_names: HashMap::new(),
+                    i64_variable_names: HashMap::new(),
+                },
+                vm2::Template {
+                    name: "mul".to_string(),
+                    code: vec![200, 201],
+                    vars_i64_num: 1,
+                    vars_ff_num: 0,
+                    signals_num: 0,
+                    number_of_inputs: 2,
+                    components: vec![],
+                    ff_variable_names: HashMap::new(),
+                    i64_variable_names: HashMap::new(),
+                },
+            ],
+            function_registry: HashMap::from([
+                ("add".to_string(), 0),
+                ("mul".to_string(), 1),
+            ]),
+            field: ff.clone(),
+            witness: vec![0, 1, 2, 3],
+            signals_num: 10,
+            input_infos: vec![
+                vm2::InputInfo {
+                    name: "input1".to_string(),
+                    offset: 1,
+                    lengths: vec![1],
+                    type_id: None,
+                },
+                vm2::InputInfo {
+                    name: "input2".to_string(),
+                    offset: 2,
+                    lengths: vec![2, 3],
+                    type_id: Some("MyType".to_string()),
+                },
+            ],
+            types: vec![
+                vm2::Type {
+                    name: "MyType".to_string(),
+                    fields: vec![
+                        vm2::TypeField {
+                            name: "field1".to_string(),
+                            kind: vm2::TypeFieldKind::Ff,
+                            offset: 0,
+                            size: 1,
+                            dims: vec![],
+                        },
+                        vm2::TypeField {
+                            name: "field2".to_string(),
+                            kind: vm2::TypeFieldKind::Bus("BusType".to_string()),
+                            offset: 1,
+                            size: 5,
+                            dims: vec![2, 3],
+                        },
+                    ],
+                },
+            ],
+        };
+        
+        // Serialize
+        let mut buf = Vec::new();
+        serialize_witnesscalc_vm2(&mut buf, &circuit).unwrap();
+        
+        // Read header
+        let mut reader = std::io::Cursor::new(&buf);
+        let prime_read = read_witnesscalc_vm2_header(&mut reader).unwrap();
+        assert_eq!(prime_read, prime);
+        
+        // Deserialize
+        let circuit2 = deserialize_witnesscalc_vm2_body(&mut reader, ff).unwrap();
+        
+        // Verify all fields
+        assert_eq!(circuit.main_template_id, circuit2.main_template_id);
+        assert_eq!(circuit.signals_num, circuit2.signals_num);
+        assert_eq!(circuit.witness, circuit2.witness);
+        assert_eq!(circuit.templates.len(), circuit2.templates.len());
+        assert_eq!(circuit.functions.len(), circuit2.functions.len());
+        assert_eq!(circuit.function_registry, circuit2.function_registry);
+        assert_eq!(circuit.input_infos.len(), circuit2.input_infos.len());
+        assert_eq!(circuit.types.len(), circuit2.types.len());
+        
+        // Verify templates
+        for (t1, t2) in circuit.templates.iter().zip(circuit2.templates.iter()) {
+            assert_eq!(t1.name, t2.name);
+            assert_eq!(t1.code, t2.code);
+            assert_eq!(t1.vars_i64_num, t2.vars_i64_num);
+            assert_eq!(t1.vars_ff_num, t2.vars_ff_num);
+            assert_eq!(t1.signals_num, t2.signals_num);
+            assert_eq!(t1.number_of_inputs, t2.number_of_inputs);
+            assert_eq!(t1.components, t2.components);
+        }
+        
+        // Verify functions
+        for (f1, f2) in circuit.functions.iter().zip(circuit2.functions.iter()) {
+            assert_eq!(f1.name, f2.name);
+            assert_eq!(f1.code, f2.code);
+            assert_eq!(f1.vars_i64_num, f2.vars_i64_num);
+            assert_eq!(f1.vars_ff_num, f2.vars_ff_num);
+            assert_eq!(f1.signals_num, f2.signals_num);
+            assert_eq!(f1.number_of_inputs, f2.number_of_inputs);
+            assert_eq!(f1.components, f2.components);
+        }
+        
+        // Verify input_infos
+        for (i1, i2) in circuit.input_infos.iter().zip(circuit2.input_infos.iter()) {
+            assert_eq!(i1.name, i2.name);
+            assert_eq!(i1.offset, i2.offset);
+            assert_eq!(i1.lengths, i2.lengths);
+            assert_eq!(i1.type_id, i2.type_id);
+        }
+        
+        // Verify types
+        for (t1, t2) in circuit.types.iter().zip(circuit2.types.iter()) {
+            assert_eq!(t1.name, t2.name);
+            assert_eq!(t1.fields.len(), t2.fields.len());
+            
+            for (f1, f2) in t1.fields.iter().zip(t2.fields.iter()) {
+                assert_eq!(f1.name, f2.name);
+                match (&f1.kind, &f2.kind) {
+                    (vm2::TypeFieldKind::Ff, vm2::TypeFieldKind::Ff) => {},
+                    (vm2::TypeFieldKind::Bus(b1), vm2::TypeFieldKind::Bus(b2)) => {
+                        assert_eq!(b1, b2);
+                    },
+                    _ => panic!("Type field kind mismatch"),
+                }
+                assert_eq!(f1.offset, f2.offset);
+                assert_eq!(f1.size, f2.size);
+                assert_eq!(f1.dims, f2.dims);
+            }
+        }
+    }
+
+    #[test]
+    fn test_vm2_serialization_empty() {
+        let prime = BigUint::from(17u64);
+        let ff = Field::new(U64::new(17u64));
+        
+        let circuit = vm2::Circuit {
+            main_template_id: 5,
+            templates: vec![],
+            functions: vec![],
+            function_registry: HashMap::new(),
+            field: ff.clone(),
+            witness: vec![],
+            signals_num: 0,
+            input_infos: vec![],
+            types: vec![],
+        };
+        
+        // Serialize
+        let mut buf = Vec::new();
+        serialize_witnesscalc_vm2(&mut buf, &circuit).unwrap();
+        
+        // Read header
+        let mut reader = std::io::Cursor::new(&buf);
+        let prime_read = read_witnesscalc_vm2_header(&mut reader).unwrap();
+        assert_eq!(prime_read, prime);
+        
+        // Deserialize
+        let circuit2 = deserialize_witnesscalc_vm2_body(&mut reader, ff).unwrap();
+        
+        assert_eq!(circuit.main_template_id, circuit2.main_template_id);
+        assert_eq!(circuit.templates.len(), 0);
+        assert_eq!(circuit2.templates.len(), 0);
+        assert_eq!(circuit.functions.len(), 0);
+        assert_eq!(circuit2.functions.len(), 0);
+        assert_eq!(circuit.function_registry.len(), 0);
+        assert_eq!(circuit2.function_registry.len(), 0);
+        assert_eq!(reader.position(), buf.len() as u64);
+    }
+
+    #[test]
+    fn test_vm2_header_invalid_magic() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"invalid.magic");
+        
+        let mut reader = std::io::Cursor::new(&buf);
+        let result = read_witnesscalc_vm2_header(&mut reader);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("cvm file does not look like a witnesscalc cvm file"));
+    }
+
+    #[test]
+    fn test_vm2_serialization_utf8_names() {
+        let prime = U254::from(101u64);
+        let field = Field::new(prime);
+        
+        let circuit = vm2::Circuit {
+            main_template_id: 0,
+            templates: vec![
+                vm2::Template {
+                    name: "模板名称".to_string(), // Chinese characters
+                    code: vec![1, 2, 3],
+                    vars_i64_num: 1,
+                    vars_ff_num: 1,
+                    signals_num: 1,
+                    number_of_inputs: 1,
+                    components: vec![],
+                    ff_variable_names: HashMap::new(),
+                    i64_variable_names: HashMap::new(),
+                },
+            ],
+            functions: vec![
+                vm2::Template {
+                    name: "función_española".to_string(), // Spanish characters
+                    code: vec![4, 5, 6],
+                    vars_i64_num: 0,
+                    vars_ff_num: 1,
+                    signals_num: 0,
+                    number_of_inputs: 1,
+                    components: vec![],
+                    ff_variable_names: HashMap::new(),
+                    i64_variable_names: HashMap::new(),
+                },
+            ],
+            function_registry: HashMap::from([
+                ("función_española".to_string(), 0),
+            ]),
+            field,
+            witness: vec![],
+            signals_num: 1,
+            input_infos: vec![
+                vm2::InputInfo {
+                    name: "вход".to_string(), // Russian characters
+                    offset: 0,
+                    lengths: vec![1],
+                    type_id: Some("τύπος".to_string()), // Greek characters
+                },
+            ],
+            types: vec![
+                vm2::Type {
+                    name: "τύπος".to_string(),
+                    fields: vec![
+                        vm2::TypeField {
+                            name: "フィールド".to_string(), // Japanese characters
+                            kind: vm2::TypeFieldKind::Bus("バス".to_string()),
+                            offset: 0,
+                            size: 1,
+                            dims: vec![],
+                        },
+                    ],
+                },
+            ],
+        };
+        
+        // Serialize
+        let mut buf = Vec::new();
+        serialize_witnesscalc_vm2(&mut buf, &circuit).unwrap();
+        
+        // Deserialize
+        let mut reader = std::io::Cursor::new(&buf);
+        let field2 = Field::new(prime);
+        let circuit2 = deserialize_witnesscalc_vm2_body(&mut reader, field2).unwrap();
+        
+        // Verify UTF-8 names are preserved
+        assert_eq!(circuit.templates[0].name, circuit2.templates[0].name);
+        assert_eq!(circuit.functions[0].name, circuit2.functions[0].name);
+        assert_eq!(circuit.input_infos[0].name, circuit2.input_infos[0].name);
+        assert_eq!(circuit.input_infos[0].type_id, circuit2.input_infos[0].type_id);
+        assert_eq!(circuit.types[0].name, circuit2.types[0].name);
+        assert_eq!(circuit.types[0].fields[0].name, circuit2.types[0].fields[0].name);
+        
+        if let vm2::TypeFieldKind::Bus(bus1) = &circuit.types[0].fields[0].kind {
+            if let vm2::TypeFieldKind::Bus(bus2) = &circuit2.types[0].fields[0].kind {
+                assert_eq!(bus1, bus2);
+            } else {
+                panic!("Expected Bus type");
+            }
+        }
+    }
+}
+
+pub fn serialize_witnesscalc_vm2<T: FieldOps>(
+    mut w: impl Write, circuit: &vm2::Circuit<T>) -> std::io::Result<()> {
+    
+    w.write_all(WITNESSCALC_CVM_MAGIC)?;
+    
+    // Write field (prime) - first write the length, then the bytes
+    let prime_bytes = circuit.field.prime.to_le_bytes();
+    w.write_u8(prime_bytes.len().try_into().map_err(|_| {
+        Error::new(
+            ErrorKind::InvalidData,
+            "Field prime is too large, cannot serialize")
+    })?)?;
+    w.write_all(&prime_bytes)?;
+    
+    // Write main_template_id
+    w.write_u32::<LittleEndian>(circuit.main_template_id as u32)?;
+    
+    // Write number of templates
+    w.write_u32::<LittleEndian>(circuit.templates.len() as u32)?;
+    
+    // Write templates
+    for template in &circuit.templates {
+        // Write template name length and name
+        w.write_u32::<LittleEndian>(template.name.len() as u32)?;
+        w.write_all(template.name.as_bytes())?;
+        
+        // Write code length and code
+        w.write_u32::<LittleEndian>(template.code.len() as u32)?;
+        w.write_all(&template.code)?;
+        
+        // Write template metadata
+        w.write_u32::<LittleEndian>(template.vars_i64_num as u32)?;
+        w.write_u32::<LittleEndian>(template.vars_ff_num as u32)?;
+        w.write_u32::<LittleEndian>(template.signals_num as u32)?;
+        w.write_u32::<LittleEndian>(template.number_of_inputs as u32)?;
+        
+        // Write components
+        w.write_u32::<LittleEndian>(template.components.len() as u32)?;
+        for component in &template.components {
+            match component {
+                Some(idx) => {
+                    w.write_u8(1)?; // Has value
+                    w.write_u32::<LittleEndian>(*idx as u32)?;
+                }
+                None => {
+                    w.write_u8(0)?; // No value
+                }
+            }
+        }
+    }
+    
+    // Write number of functions
+    w.write_u32::<LittleEndian>(circuit.functions.len() as u32)?;
+    
+    // Write functions (same format as templates)
+    for function in &circuit.functions {
+        w.write_u32::<LittleEndian>(function.name.len() as u32)?;
+        w.write_all(function.name.as_bytes())?;
+        
+        w.write_u32::<LittleEndian>(function.code.len() as u32)?;
+        w.write_all(&function.code)?;
+        
+        w.write_u32::<LittleEndian>(function.vars_i64_num as u32)?;
+        w.write_u32::<LittleEndian>(function.vars_ff_num as u32)?;
+        w.write_u32::<LittleEndian>(function.signals_num as u32)?;
+        w.write_u32::<LittleEndian>(function.number_of_inputs as u32)?;
+        
+        w.write_u32::<LittleEndian>(function.components.len() as u32)?;
+        for component in &function.components {
+            match component {
+                Some(idx) => {
+                    w.write_u8(1)?;
+                    w.write_u32::<LittleEndian>(*idx as u32)?;
+                }
+                None => {
+                    w.write_u8(0)?;
+                }
+            }
+        }
+    }
+    
+    // Write witness
+    w.write_u32::<LittleEndian>(circuit.witness.len() as u32)?;
+    for signal_idx in &circuit.witness {
+        w.write_u32::<LittleEndian>(*signal_idx as u32)?;
+    }
+    
+    // Write signals_num
+    w.write_u32::<LittleEndian>(circuit.signals_num as u32)?;
+    
+    // Write input_infos
+    w.write_u32::<LittleEndian>(circuit.input_infos.len() as u32)?;
+    for input_info in &circuit.input_infos {
+        // Write name
+        w.write_u32::<LittleEndian>(input_info.name.len() as u32)?;
+        w.write_all(input_info.name.as_bytes())?;
+        
+        // Write offset
+        w.write_u32::<LittleEndian>(input_info.offset as u32)?;
+        
+        // Write lengths
+        w.write_u32::<LittleEndian>(input_info.lengths.len() as u32)?;
+        for length in &input_info.lengths {
+            w.write_u32::<LittleEndian>(*length as u32)?;
+        }
+        
+        // Write type_id
+        match &input_info.type_id {
+            Some(type_id) => {
+                w.write_u8(1)?; // Has type_id
+                w.write_u32::<LittleEndian>(type_id.len() as u32)?;
+                w.write_all(type_id.as_bytes())?;
+            }
+            None => {
+                w.write_u8(0)?; // No type_id
+            }
+        }
+    }
+    
+    // Write types
+    w.write_u32::<LittleEndian>(circuit.types.len() as u32)?;
+    for typ in &circuit.types {
+        // Write type name
+        w.write_u32::<LittleEndian>(typ.name.len() as u32)?;
+        w.write_all(typ.name.as_bytes())?;
+        
+        // Write fields
+        w.write_u32::<LittleEndian>(typ.fields.len() as u32)?;
+        for field in &typ.fields {
+            // Write field name
+            w.write_u32::<LittleEndian>(field.name.len() as u32)?;
+            w.write_all(field.name.as_bytes())?;
+            
+            // Write field kind
+            match &field.kind {
+                vm2::TypeFieldKind::Ff => {
+                    w.write_u8(0)?;
+                }
+                vm2::TypeFieldKind::Bus(bus_name) => {
+                    w.write_u8(1)?;
+                    w.write_u32::<LittleEndian>(bus_name.len() as u32)?;
+                    w.write_all(bus_name.as_bytes())?;
+                }
+            }
+            
+            // Write offset and size
+            w.write_u32::<LittleEndian>(field.offset as u32)?;
+            w.write_u32::<LittleEndian>(field.size as u32)?;
+            
+            // Write dims
+            w.write_u32::<LittleEndian>(field.dims.len() as u32)?;
+            for dim in &field.dims {
+                w.write_u32::<LittleEndian>(*dim as u32)?;
+            }
+        }
+    }
+    
+    Ok(())
+}
+
+pub fn read_witnesscalc_vm2_header(
+    mut r: impl Read) -> std::io::Result<BigUint> {
+    
+    let mut magic = [0u8; WITNESSCALC_CVM_MAGIC.len()];
+    r.read_exact(&mut magic)?;
+    
+    if !magic.eq(WITNESSCALC_CVM_MAGIC) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "cvm file does not look like a witnesscalc cvm file"));
+    }
+    
+    // Read field (prime) - first read the length, then the bytes
+    let prime_len = r.read_u8()? as usize;
+    let mut prime_bytes = vec![0u8; prime_len];
+    r.read_exact(&mut prime_bytes)?;
+
+    Ok(BigUint::from_bytes_le(&prime_bytes))
+}
+
+pub fn deserialize_witnesscalc_vm2_body<T: FieldOps>(
+    mut r: impl Read, field: Field<T>) -> std::io::Result<vm2::Circuit<T>> {
+    
+    // Read main_template_id
+    let main_template_id = r.read_u32::<LittleEndian>()? as usize;
+    
+    // Read templates
+    let num_templates = r.read_u32::<LittleEndian>()? as usize;
+    let mut templates = Vec::with_capacity(num_templates);
+    
+    for _ in 0..num_templates {
+        // Read template name
+        let name_len = r.read_u32::<LittleEndian>()? as usize;
+        let mut name_bytes = vec![0u8; name_len];
+        r.read_exact(&mut name_bytes)?;
+        let name = String::from_utf8(name_bytes)
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid UTF-8 in template name"))?;
+        
+        // Read code
+        let code_len = r.read_u32::<LittleEndian>()? as usize;
+        let mut code = vec![0u8; code_len];
+        r.read_exact(&mut code)?;
+        
+        // Read template metadata
+        let vars_i64_num = r.read_u32::<LittleEndian>()? as usize;
+        let vars_ff_num = r.read_u32::<LittleEndian>()? as usize;
+        let signals_num = r.read_u32::<LittleEndian>()? as usize;
+        let number_of_inputs = r.read_u32::<LittleEndian>()? as usize;
+        
+        // Read components
+        let num_components = r.read_u32::<LittleEndian>()? as usize;
+        let mut components = Vec::with_capacity(num_components);
+        for _ in 0..num_components {
+            let has_value = r.read_u8()?;
+            if has_value == 1 {
+                let idx = r.read_u32::<LittleEndian>()? as usize;
+                components.push(Some(idx));
+            } else {
+                components.push(None);
+            }
+        }
+        
+        templates.push(vm2::Template {
+            name,
+            code,
+            vars_i64_num,
+            vars_ff_num,
+            signals_num,
+            number_of_inputs,
+            components,
+            ff_variable_names: HashMap::new(),
+            i64_variable_names: HashMap::new(),
+        });
+    }
+    
+    // Read functions
+    let num_functions = r.read_u32::<LittleEndian>()? as usize;
+    let mut functions = Vec::with_capacity(num_functions);
+    let mut function_registry = HashMap::new();
+    
+    for idx in 0..num_functions {
+        // Read function name
+        let name_len = r.read_u32::<LittleEndian>()? as usize;
+        let mut name_bytes = vec![0u8; name_len];
+        r.read_exact(&mut name_bytes)?;
+        let name = String::from_utf8(name_bytes)
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid UTF-8 in function name"))?;
+        
+        // Add to function registry
+        function_registry.insert(name.clone(), idx);
+        
+        // Read code
+        let code_len = r.read_u32::<LittleEndian>()? as usize;
+        let mut code = vec![0u8; code_len];
+        r.read_exact(&mut code)?;
+        
+        // Read function metadata
+        let vars_i64_num = r.read_u32::<LittleEndian>()? as usize;
+        let vars_ff_num = r.read_u32::<LittleEndian>()? as usize;
+        let signals_num = r.read_u32::<LittleEndian>()? as usize;
+        let number_of_inputs = r.read_u32::<LittleEndian>()? as usize;
+        
+        // Read components
+        let num_components = r.read_u32::<LittleEndian>()? as usize;
+        let mut components = Vec::with_capacity(num_components);
+        for _ in 0..num_components {
+            let has_value = r.read_u8()?;
+            if has_value == 1 {
+                let idx = r.read_u32::<LittleEndian>()? as usize;
+                components.push(Some(idx));
+            } else {
+                components.push(None);
+            }
+        }
+        
+        functions.push(vm2::Template {
+            name,
+            code,
+            vars_i64_num,
+            vars_ff_num,
+            signals_num,
+            number_of_inputs,
+            components,
+            ff_variable_names: HashMap::new(),
+            i64_variable_names: HashMap::new(),
+        });
+    }
+    
+    // Read witness
+    let num_witness = r.read_u32::<LittleEndian>()? as usize;
+    let mut witness = Vec::with_capacity(num_witness);
+    for _ in 0..num_witness {
+        witness.push(r.read_u32::<LittleEndian>()? as usize);
+    }
+    
+    // Read signals_num
+    let signals_num = r.read_u32::<LittleEndian>()? as usize;
+    
+    // Read input_infos
+    let num_input_infos = r.read_u32::<LittleEndian>()? as usize;
+    let mut input_infos = Vec::with_capacity(num_input_infos);
+    
+    for _ in 0..num_input_infos {
+        // Read name
+        let name_len = r.read_u32::<LittleEndian>()? as usize;
+        let mut name_bytes = vec![0u8; name_len];
+        r.read_exact(&mut name_bytes)?;
+        let name = String::from_utf8(name_bytes)
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid UTF-8 in input name"))?;
+        
+        // Read offset
+        let offset = r.read_u32::<LittleEndian>()? as usize;
+        
+        // Read lengths
+        let num_lengths = r.read_u32::<LittleEndian>()? as usize;
+        let mut lengths = Vec::with_capacity(num_lengths);
+        for _ in 0..num_lengths {
+            lengths.push(r.read_u32::<LittleEndian>()? as usize);
+        }
+        
+        // Read type_id
+        let has_type_id = r.read_u8()?;
+        let type_id = if has_type_id == 1 {
+            let type_id_len = r.read_u32::<LittleEndian>()? as usize;
+            let mut type_id_bytes = vec![0u8; type_id_len];
+            r.read_exact(&mut type_id_bytes)?;
+            Some(String::from_utf8(type_id_bytes)
+                .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid UTF-8 in type_id"))?)
+        } else {
+            None
+        };
+        
+        input_infos.push(vm2::InputInfo {
+            name,
+            offset,
+            lengths,
+            type_id,
+        });
+    }
+    
+    // Read types
+    let num_types = r.read_u32::<LittleEndian>()? as usize;
+    let mut types = Vec::with_capacity(num_types);
+    
+    for _ in 0..num_types {
+        // Read type name
+        let name_len = r.read_u32::<LittleEndian>()? as usize;
+        let mut name_bytes = vec![0u8; name_len];
+        r.read_exact(&mut name_bytes)?;
+        let name = String::from_utf8(name_bytes)
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid UTF-8 in type name"))?;
+        
+        // Read fields
+        let num_fields = r.read_u32::<LittleEndian>()? as usize;
+        let mut fields = Vec::with_capacity(num_fields);
+        
+        for _ in 0..num_fields {
+            // Read field name
+            let field_name_len = r.read_u32::<LittleEndian>()? as usize;
+            let mut field_name_bytes = vec![0u8; field_name_len];
+            r.read_exact(&mut field_name_bytes)?;
+            let field_name = String::from_utf8(field_name_bytes)
+                .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid UTF-8 in field name"))?;
+            
+            // Read field kind
+            let kind_tag = r.read_u8()?;
+            let kind = match kind_tag {
+                0 => vm2::TypeFieldKind::Ff,
+                1 => {
+                    let bus_name_len = r.read_u32::<LittleEndian>()? as usize;
+                    let mut bus_name_bytes = vec![0u8; bus_name_len];
+                    r.read_exact(&mut bus_name_bytes)?;
+                    let bus_name = String::from_utf8(bus_name_bytes)
+                        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid UTF-8 in bus name"))?;
+                    vm2::TypeFieldKind::Bus(bus_name)
+                }
+                _ => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid type field kind")),
+            };
+            
+            // Read offset and size
+            let offset = r.read_u32::<LittleEndian>()? as usize;
+            let size = r.read_u32::<LittleEndian>()? as usize;
+            
+            // Read dims
+            let num_dims = r.read_u32::<LittleEndian>()? as usize;
+            let mut dims = Vec::with_capacity(num_dims);
+            for _ in 0..num_dims {
+                dims.push(r.read_u32::<LittleEndian>()? as usize);
+            }
+            
+            fields.push(vm2::TypeField {
+                name: field_name,
+                kind,
+                offset,
+                size,
+                dims,
+            });
+        }
+        
+        types.push(vm2::Type {
+            name,
+            fields,
+        });
+    }
+    
+    Ok(vm2::Circuit {
+        main_template_id,
+        templates,
+        functions,
+        function_registry,
+        field,
+        witness,
+        signals_num,
+        input_infos,
+        types,
+    })
 }

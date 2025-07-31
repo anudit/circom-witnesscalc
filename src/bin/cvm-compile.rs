@@ -11,7 +11,7 @@ use circom_witnesscalc::{ast, vm2, wtns_from_witness2};
 use circom_witnesscalc::ast::{Expr, FfExpr, I64Expr, Statement};
 use circom_witnesscalc::field::{bn254_prime, Field, FieldOperations, FieldOps, U254};
 use circom_witnesscalc::parser::parse;
-use circom_witnesscalc::vm2::{disassemble_instruction, execute, Circuit, Component, OpCode, Template, InputInfo};
+use circom_witnesscalc::vm2::{disassemble_instruction, execute, Circuit, Component, OpCode, Template, InputInfo, Function};
 
 struct WantWtns {
     wtns_file: String,
@@ -159,8 +159,12 @@ fn main() {
         let ff = Field::new(bn254_prime);
         let sym_content = fs::read_to_string(&args.sym_file).unwrap();
         let circuit = compile(&ff, &program, &sym_content).unwrap();
-        disassemble::<U254>(&circuit.templates);
-        disassemble::<U254>(&circuit.functions);
+        for t in &circuit.templates {
+            disassemble::<U254>(&TF::T(t))
+        }
+        for f in &circuit.functions {
+            disassemble::<U254>(&TF::F(f))
+        }
         if args.want_wtns.is_some() {
             calculate_witness(&circuit, args.want_wtns.unwrap()).unwrap();
         }
@@ -788,17 +792,55 @@ fn witness<T: FieldOps>(signals: &[Option<T>], witness_signals: &[usize], prime:
 
 }
 
-fn disassemble<T: FieldOps>(templates: &[vm2::Template]) {
-    for t in templates.iter() {
-        println!("[begin]Template: {}", t.name);
-        let mut ip: usize = 0;
-        while ip < t.code.len() {
-            ip = disassemble_instruction::<T>(
-                &t.code, ip, &t.name, &t.ff_variable_names,
-                &t.i64_variable_names);
+enum TF<'a> {
+    T(&'a Template),
+    F(&'a Function),
+}
+
+impl TF<'_> {
+    fn code(&self) -> &[u8] {
+        match self {
+            TF::T(t) => &t.code,
+            TF::F(f) => &f.code,
         }
-        println!("[end]")
     }
+    fn name(&self) -> &str {
+        match self {
+            TF::T(t) => &t.name,
+            TF::F(f) => &f.name,
+        }
+    }
+    fn ff_variable_names(&self) -> &HashMap<usize, String> {
+        match self {
+            TF::T(t) => &t.ff_variable_names,
+            TF::F(f) => &f.ff_variable_names,
+        }
+    }
+    fn i64_variable_names(&self) -> &HashMap<usize, String> {
+        match self {
+            TF::T(t) => &t.i64_variable_names,
+            TF::F(f) => &f.i64_variable_names,
+        }
+    }
+}
+
+fn disassemble<T: FieldOps>(tf: &TF) {
+    match tf {
+        TF::T(t) => {
+            println!("[begin]Template: {}", t.name);
+        }
+        TF::F(f) => {
+            println!("[begin]Function: {}", f.name);
+        }
+    }
+
+    let mut ip: usize = 0;
+    while ip < tf.code().len() {
+        ip = disassemble_instruction::<T>(
+            tf.code(), ip, tf.name(), tf.ff_variable_names(),
+            tf.i64_variable_names());
+    }
+    println!("[end]")
 }
 
 fn compile<T: FieldOps>(
@@ -1423,7 +1465,7 @@ fn compile_function<F>(
     f: &ast::Function, 
     ff: &F, 
     function_registry: &HashMap<String, usize>
-) -> Result<vm2::Template, Box<dyn Error>>
+) -> Result<vm2::Function, Box<dyn Error>>
 where
     for <'a> &'a F: FieldOperations {
 
@@ -1452,14 +1494,11 @@ where
         i64_variable_names.insert(index as usize, name.clone());
     }
 
-    Ok(vm2::Template {
+    Ok(vm2::Function {
         name: f.name.clone(),
         code: ctx.code,
         vars_i64_num: ctx.i64_variable_indexes.len(),
         vars_ff_num: ctx.ff_variable_indexes.len(),
-        signals_num: 0,
-        number_of_inputs: 0,
-        components: Vec::new(),
         ff_variable_names,
         i64_variable_names,
     })

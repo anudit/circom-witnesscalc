@@ -141,7 +141,7 @@ pub struct Component {
 pub struct Circuit<T: FieldOps> {
     pub main_template_id: usize,
     pub templates: Vec<Template>,
-    pub functions: Vec<Template>, // Functions are compiled the same way as templates
+    pub functions: Vec<Function>,
     pub function_registry: HashMap<String, usize>, // Function name -> index mapping
     pub field: Field<T>,
     pub witness: Vec<usize>,
@@ -158,6 +158,16 @@ pub struct Template {
     pub signals_num: usize,
     pub number_of_inputs: usize,
     pub components: Vec<Option<usize>>,
+    // Variable name mappings for debugging
+    pub ff_variable_names: HashMap<usize, String>,
+    pub i64_variable_names: HashMap<usize, String>,
+}
+
+pub struct Function {
+    pub name: String,
+    pub code: Vec<u8>,
+    pub vars_i64_num: usize,
+    pub vars_ff_num: usize,
     // Variable name mappings for debugging
     pub ff_variable_names: HashMap<usize, String>,
     pub i64_variable_names: HashMap<usize, String>,
@@ -832,14 +842,24 @@ where
 }
 
 // Helper function to get the currently executing template/function
-fn get_current_template<'a, T: FieldOps>(
+fn get_current_context<'a, T: FieldOps>(
     vm: &VM<T>,
     circuit: &'a Circuit<T>,
     component_tree: &Component,
-) -> &'a Template {
+) -> (&'a [u8], &'a str, &'a HashMap<usize, String>, &'a HashMap<usize, String>) {
     match vm.current_execution_context {
-        ExecutionContext::Template => &circuit.templates[component_tree.template_id],
-        ExecutionContext::Function(func_idx) => &circuit.functions[func_idx],
+        ExecutionContext::Template => (
+            &circuit.templates[component_tree.template_id].code,
+            &circuit.templates[component_tree.template_id].name,
+            &circuit.templates[component_tree.template_id].ff_variable_names,
+            &circuit.templates[component_tree.template_id].i64_variable_names,
+        ),
+        ExecutionContext::Function(func_idx) => (
+            &circuit.functions[func_idx].code,
+            &circuit.functions[func_idx].name,
+            &circuit.functions[func_idx].ff_variable_names,
+            &circuit.functions[func_idx].i64_variable_names,
+        ),
     }
 }
 
@@ -853,16 +873,16 @@ where
     let mut vm = VM::<T>::new();
 
     // Initialize with template's variable counts (function calls will resize as needed)
+    // TODO every time we switch the context, we should check the stacks have sufficient size
     vm.stack_ff.resize_with(
         circuit.templates[component_tree.template_id].vars_ff_num, || None);
     vm.stack_i64.resize_with(
         circuit.templates[component_tree.template_id].vars_i64_num, || None);
 
-    // Cache current template reference - only update when execution context changes
-    let mut current_template = get_current_template(&vm, circuit, component_tree);
+    let (mut code, mut name, mut ff_variable_names, mut i64_variable_names) = get_current_context(&vm, circuit, component_tree);
 
     'label: loop {
-        if ip == current_template.code.len() {
+        if ip == code.len() {
             // Handle end of current execution context
             match vm.current_execution_context {
                 ExecutionContext::Template => {
@@ -877,11 +897,9 @@ where
         }
 
         disassemble_instruction::<T>(
-            &current_template.code, ip, &current_template.name,
-            &current_template.ff_variable_names,
-            &current_template.i64_variable_names);
+            code, ip, name, ff_variable_names, i64_variable_names);
 
-        let op_code = read_instruction(&current_template.code, ip);
+        let op_code = read_instruction(code, ip);
         ip += 1;
 
         match op_code {
@@ -919,25 +937,23 @@ where
             }
             OpCode::PushI64 => {
                 vm.push_i64(
-                    i64::from_le_bytes(
-                        (&current_template.code[ip..ip+8])
-                            .try_into().unwrap()));
+                    i64::from_le_bytes((&code[ip..ip+8]).try_into().unwrap()));
                 ip += 8;
             }
             OpCode::PushFf => {
-                let s = &current_template.code[ip..ip+T::BYTES];
+                let s = &code[ip..ip+T::BYTES];
                 ip += T::BYTES;
                 let v = ff.parse_le_bytes(s)?;
                 vm.push_ff(v);
             }
             OpCode::StoreVariableFf => {
                 let var_idx: usize;
-                (var_idx, ip) = usize_from_code(&current_template.code, ip)?;
+                (var_idx, ip) = usize_from_code(code, ip)?;
                 let value = vm.pop_ff()?;
                 vm.stack_ff[vm.stack_base_pointer_ff + var_idx] = Some(value);
                 #[cfg(feature = "debug_vm2")]
                 {
-                    let var_name = current_template.ff_variable_names
+                    let var_name = ff_variable_names
                         .get(&var_idx)
                         .map(|s| format!(" ({})", s))
                         .unwrap_or_default();
@@ -946,12 +962,12 @@ where
             }
             OpCode::StoreVariableI64 => {
                 let var_idx: usize;
-                (var_idx, ip) = usize_from_code(&current_template.code, ip)?;
+                (var_idx, ip) = usize_from_code(code, ip)?;
                 let value = vm.pop_i64()?;
                 vm.stack_i64[vm.stack_base_pointer_i64 + var_idx] = Some(value);
                 #[cfg(feature = "debug_vm2")]
                 {
-                    let var_name = current_template.i64_variable_names
+                    let var_name = i64_variable_names
                         .get(&var_idx)
                         .map(|s| format!(" ({})", s))
                         .unwrap_or_default();
@@ -960,7 +976,7 @@ where
             }
             OpCode::LoadVariableI64 => {
                 let var_idx: usize;
-                (var_idx, ip) = usize_from_code(&current_template.code, ip)?;
+                (var_idx, ip) = usize_from_code(code, ip)?;
                 let var = match vm.stack_i64.get(vm.stack_base_pointer_i64 + var_idx) {
                     Some(v) => v,
                     None => return Err(Box::new(RuntimeError::StackOverflow)),
@@ -973,7 +989,7 @@ where
             }
             OpCode::LoadVariableFf => {
                 let var_idx: usize;
-                (var_idx, ip) = usize_from_code(&current_template.code, ip)?;
+                (var_idx, ip) = usize_from_code(code, ip)?;
                 let var = match vm.stack_ff.get(vm.stack_base_pointer_ff + var_idx) {
                     Some(v) => v,
                     None => return Err(Box::new(RuntimeError::StackOverflow)),
@@ -1123,7 +1139,7 @@ where
                 }
             }
             OpCode::JumpIfFalseFf => {
-                let offset_bytes = &current_template.code[ip..ip + size_of::<i32>()];
+                let offset_bytes = &code[ip..ip + size_of::<i32>()];
                 let offset = i32::from_le_bytes((offset_bytes).try_into().unwrap());
                 ip += size_of::<i32>();
 
@@ -1136,7 +1152,7 @@ where
                 }
             }
             OpCode::JumpIfFalseI64 => {
-                let offset_bytes = &current_template.code[ip..ip + size_of::<i32>()];
+                let offset_bytes = &code[ip..ip + size_of::<i32>()];
                 let offset = i32::from_le_bytes((offset_bytes).try_into().unwrap());
                 ip += size_of::<i32>();
 
@@ -1153,7 +1169,7 @@ where
                 return Err(Box::new(RuntimeError::Assertion(error_code)));
             }
             OpCode::Jump => {
-                let offset_bytes = &current_template.code[ip..ip + size_of::<i32>()];
+                let offset_bytes = &code[ip..ip + size_of::<i32>()];
                 let offset = i32::from_le_bytes((offset_bytes).try_into().unwrap());
                 ip += size_of::<i32>();
 
@@ -1233,8 +1249,8 @@ where
                 vm.memory_base_pointer_i64 = call_frame.return_memory_base_pointer_i64;
                 
                 // Switch back to caller's execution context
-                current_template = get_current_template(&vm, circuit, component_tree);
-                eprintln!("DEBUG FfMReturn: after restoration ip={:08x}, template={}", ip, current_template.name);
+                (code, name, ff_variable_names, i64_variable_names) = get_current_context(&vm, circuit, component_tree);
+                eprintln!("DEBUG FfMReturn: after restoration ip={:08x}, template={}", ip, name);
             }
             OpCode::FfMCall => {
                 // Check call stack depth
@@ -1243,7 +1259,7 @@ where
                 }
                 
                 let func_idx: usize;
-                (func_idx, ip) = read_usize32(&current_template.code, ip);
+                (func_idx, ip) = read_usize32(code, ip);
 
                 // Validate function index
                 if func_idx >= circuit.functions.len() {
@@ -1251,12 +1267,12 @@ where
                 }
 
                 // Read argument count
-                let arg_count = current_template.code[ip];
+                let arg_count = code[ip];
                 ip += 1;
                 
                 // Create call frame
                 let call_frame = CallFrame {
-                    return_ip: ip + calculate_args_size::<T>(&current_template.code[ip..], arg_count)?,
+                    return_ip: ip + calculate_args_size::<T>(&code[ip..], arg_count)?,
                     return_context: vm.current_execution_context.clone(),
                     return_stack_base_pointer_ff: vm.stack_base_pointer_ff,
                     return_stack_base_pointer_i64: vm.stack_base_pointer_i64,
@@ -1277,10 +1293,10 @@ where
                 vm.stack_i64.resize(vm.stack_base_pointer_i64 + circuit.functions[func_idx].vars_i64_num, None);
                 
                 // Process arguments and copy to function memory
-                process_function_arguments(&mut vm, &current_template.code[ip..], arg_count)?;
+                process_function_arguments(&mut vm, &code[ip..], arg_count)?;
                 
                 // Switch to function execution context
-                current_template = get_current_template(&vm, circuit, component_tree);
+                (code, name, ff_variable_names, i64_variable_names) = get_current_context(&vm, circuit, component_tree);
                 ip = 0; // Start executing function from beginning
             }
             OpCode::FfStore => {

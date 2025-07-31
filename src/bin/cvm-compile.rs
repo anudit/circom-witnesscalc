@@ -1084,6 +1084,11 @@ where
             ff_expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpLt as u8);
         },
+        FfExpr::Gt(lhs, rhs) => {
+            ff_expression(ctx, ff, rhs)?;
+            ff_expression(ctx, ff, lhs)?;
+            ctx.code.push(OpCode::OpGt as u8);
+        },
         FfExpr::FfShr(lhs, rhs) => {
             ff_expression(ctx, ff, rhs)?;
             ff_expression(ctx, ff, lhs)?;

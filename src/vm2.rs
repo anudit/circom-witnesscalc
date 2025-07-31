@@ -104,6 +104,11 @@ pub enum OpCode {
     // stack_ff:-1 contains left operand
     // Result pushed to stack_ff (1 if lhs < rhs, 0 otherwise)
     OpLt                 = 31,
+    // Field greater-than comparison (ff.gt)
+    // stack_ff:0 contains right operand
+    // stack_ff:-1 contains left operand
+    // Result pushed to stack_ff (1 if lhs > rhs, 0 otherwise)
+    OpGt                 = 38,
     // Integer multiplication (i64.mul)
     // stack_i64:0 contains right operand
     // stack_i64:-1 contains left operand
@@ -809,6 +814,9 @@ where
         OpCode::OpLt => {
             output.push_str("OpLt");
         }
+        OpCode::OpGt => {
+            output.push_str("OpGt");
+        }
         OpCode::OpI64Mul => {
             output.push_str("OpI64Mul");
         }
@@ -1349,6 +1357,16 @@ where
                 #[cfg(feature = "debug_vm2")]
                 {
                     println!("OpLt: {} < {} = {}", lhs, rhs, result);
+                }
+                vm.push_ff(result);
+            }
+            OpCode::OpGt => {
+                let lhs = vm.pop_ff()?;
+                let rhs = vm.pop_ff()?;
+                let result = ff.gt(lhs, rhs);
+                #[cfg(feature = "debug_vm2")]
+                {
+                    println!("OpGt: {} > {} = {}", lhs, rhs, result);
                 }
                 vm.push_ff(result);
             }

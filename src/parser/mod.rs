@@ -608,6 +608,8 @@ fn parse_ff_expression(input: &mut &str) -> ModalResult<FfExpr> {
             "ff.load" => preceded(space1, parse_i64_operand).map(FfExpr::Load),
             "ff.lt" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
                 .map(|(op1, op2)| FfExpr::Lt(Box::new(op1), Box::new(op2))),
+            "ff.gt" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
+                .map(|(op1, op2)| FfExpr::Gt(Box::new(op1), Box::new(op2))),
             "ff.shr" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
                 .map(|(op1, op2)| FfExpr::FfShr(Box::new(op1), Box::new(op2))),
             "ff.band" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
@@ -1115,6 +1117,15 @@ expected valid i64 value";
         let want = FfExpr::Lt(
             Box::new(FfExpr::Variable("x_3".to_string())),
             Box::new(FfExpr::Literal(BigUint::from(2u32)))
+        );
+        let op = parse_ff_expression.parse(input).unwrap();
+        assert_eq!(op, want);
+
+        // test ff.gt expression
+        let input = "ff.gt x_5 ff.10";
+        let want = FfExpr::Gt(
+            Box::new(FfExpr::Variable("x_5".to_string())),
+            Box::new(FfExpr::Literal(BigUint::from(10u32)))
         );
         let op = parse_ff_expression.parse(input).unwrap();
         assert_eq!(op, want);

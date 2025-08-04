@@ -1454,7 +1454,7 @@ pub enum TypeFieldKind {
 
 // Type conversion functions that require type name to index mapping
 impl Type {
-    pub fn from_ast(ast_type: &crate::ast::Type, type_map: &std::collections::HashMap<String, usize>) -> Self {
+    pub fn from_ast(ast_type: &crate::ast::Type, type_map: &HashMap<String, usize>) -> Self {
         Type {
             name: ast_type.name.clone(),
             fields: ast_type.fields.iter()
@@ -1465,7 +1465,7 @@ impl Type {
 }
 
 impl TypeField {
-    pub fn from_ast(ast_field: &crate::ast::TypeField, type_map: &std::collections::HashMap<String, usize>) -> Self {
+    pub fn from_ast(ast_field: &crate::ast::TypeField, type_map: &HashMap<String, usize>) -> Self {
         TypeField {
             name: ast_field.name.clone(),
             kind: match &ast_field.kind {

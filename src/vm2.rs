@@ -134,6 +134,10 @@ pub enum OpCode {
     // Result pushed to stack_ff
     OpBand               = 36,
     OpRem                = 37,
+    // Get template ID of a component
+    // stack_i64:0 contains the component index
+    // Result pushed to stack_i64 (template_id of the component)
+    GetTemplateId        = 39,
 }
 
 pub struct Component {
@@ -832,6 +836,9 @@ where
         OpCode::OpBand => {
             output.push_str("OpBand");
         }
+        OpCode::GetTemplateId => {
+            output.push_str("GetTemplateId");
+        }
     }
 
     (ip, output)
@@ -1407,6 +1414,16 @@ where
                 let lhs = vm.pop_ff()?;
                 let rhs = vm.pop_ff()?;
                 vm.push_ff(ff.modulo(lhs, rhs));
+            }
+            OpCode::GetTemplateId => {
+                let cmp_idx = vm.pop_usize()?;
+                let template_id = match component_tree.components[cmp_idx] {
+                    None => {
+                        return Err(Box::new(RuntimeError::UninitializedComponent))
+                    }
+                    Some(ref c) => c.template_id as i64
+                };
+                vm.push_i64(template_id);
             }
         }
     }

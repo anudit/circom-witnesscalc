@@ -1011,6 +1011,10 @@ where
             ff_expression(ctx, ff, ff_expr)?;
             ctx.code.push(OpCode::I64WrapFf as u8);
         }
+        I64Expr::GetTemplateId(cmp_idx) => {
+            operand_i64(ctx, cmp_idx);
+            ctx.code.push(OpCode::GetTemplateId as u8);
+        }
     }
     Ok(())
 }

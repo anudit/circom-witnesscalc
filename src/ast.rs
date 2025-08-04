@@ -362,6 +362,7 @@ pub enum I64Expr {
     Load(I64Operand),
     Wrap(Box<FfExpr>),
     Lte(Box<I64Expr>, Box<I64Expr>),
+    GetTemplateId(I64Operand),
 }
 
 #[cfg_attr(test, derive(PartialEq, Debug))]

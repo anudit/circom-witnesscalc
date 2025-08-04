@@ -643,6 +643,8 @@ fn parse_i64_expression(input: &mut &str) -> ModalResult<I64Expr> {
                 .map(I64Expr::Load),
             "i64.wrap_ff" => preceded(space1, parse_ff_expr)
                 .map(|expr| I64Expr::Wrap(Box::new(expr))),
+            "get_template_id" => preceded(space1, parse_i64_operand)
+                .map(I64Expr::GetTemplateId),
             _ => fail::<_, I64Expr, _>,
         },
         // Try to parse as a literal
@@ -1876,6 +1878,17 @@ x";
             Box::new(I64Expr::Literal(4)),
             Box::new(I64Expr::Variable("x_1".to_string()))
         );
+        let i64_expr = consume_parse_result(parse_i64_expression.parse(input));
+        assert_eq!(want, i64_expr);
+
+        // test get_template_id expression
+        let input = "get_template_id i64.0";
+        let want = I64Expr::GetTemplateId(I64Operand::Literal(0));
+        let i64_expr = consume_parse_result(parse_i64_expression.parse(input));
+        assert_eq!(want, i64_expr);
+
+        let input = "get_template_id x_42";
+        let want = I64Expr::GetTemplateId(I64Operand::Variable("x_42".to_string()));
         let i64_expr = consume_parse_result(parse_i64_expression.parse(input));
         assert_eq!(want, i64_expr);
     }

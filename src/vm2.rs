@@ -1472,7 +1472,7 @@ impl TypeField {
                 crate::ast::TypeFieldKind::Ff => TypeFieldKind::Ff,
                 crate::ast::TypeFieldKind::Bus(name) => {
                     let index = type_map.get(name)
-                        .expect(&format!("Bus type '{}' not found in type map", name));
+                        .unwrap_or_else(|| panic!("Bus type '{}' not found in type map", name));
                     TypeFieldKind::Bus(*index)
                 },
             },

@@ -664,10 +664,9 @@ pub fn serialize_witnesscalc_vm2<T: FieldOps>(
                 vm2::TypeFieldKind::Ff => {
                     w.write_u8(0)?;
                 }
-                vm2::TypeFieldKind::Bus(bus_name) => {
+                vm2::TypeFieldKind::Bus(bus_index) => {
                     w.write_u8(1)?;
-                    w.write_u32::<LittleEndian>(bus_name.len() as u32)?;
-                    w.write_all(bus_name.as_bytes())?;
+                    w.write_u32::<LittleEndian>(*bus_index as u32)?;
                 }
             }
 
@@ -877,12 +876,8 @@ pub fn deserialize_witnesscalc_vm2_body<T: FieldOps>(
             let kind = match kind_tag {
                 0 => vm2::TypeFieldKind::Ff,
                 1 => {
-                    let bus_name_len = r.read_u32::<LittleEndian>()? as usize;
-                    let mut bus_name_bytes = vec![0u8; bus_name_len];
-                    r.read_exact(&mut bus_name_bytes)?;
-                    let bus_name = String::from_utf8(bus_name_bytes)
-                        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid UTF-8 in bus name"))?;
-                    vm2::TypeFieldKind::Bus(bus_name)
+                    let bus_index = r.read_u32::<LittleEndian>()? as usize;
+                    vm2::TypeFieldKind::Bus(bus_index)
                 }
                 _ => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid type field kind")),
             };
@@ -1270,7 +1265,7 @@ mod tests {
                         },
                         vm2::TypeField {
                             name: "field2".to_string(),
-                            kind: vm2::TypeFieldKind::Bus("BusType".to_string()),
+                            kind: vm2::TypeFieldKind::Bus(0), // Index 0 in types vector
                             offset: 1,
                             size: 5,
                             dims: vec![2, 3],
@@ -1450,7 +1445,7 @@ mod tests {
                     fields: vec![
                         vm2::TypeField {
                             name: "フィールド".to_string(), // Japanese characters
-                            kind: vm2::TypeFieldKind::Bus("バス".to_string()),
+                            kind: vm2::TypeFieldKind::Bus(0), // Index 0 in types vector
                             offset: 0,
                             size: 1,
                             dims: vec![],

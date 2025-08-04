@@ -1449,25 +1449,32 @@ pub struct TypeField {
 #[derive(Debug, Clone)]
 pub enum TypeFieldKind {
     Ff,
-    Bus(String),
+    Bus(usize), // Index into the types vector
 }
 
-impl From<&crate::ast::Type> for Type {
-    fn from(ast_type: &crate::ast::Type) -> Self {
+// Type conversion functions that require type name to index mapping
+impl Type {
+    pub fn from_ast(ast_type: &crate::ast::Type, type_map: &std::collections::HashMap<String, usize>) -> Self {
         Type {
             name: ast_type.name.clone(),
-            fields: ast_type.fields.iter().map(Into::into).collect(),
+            fields: ast_type.fields.iter()
+                .map(|field| TypeField::from_ast(field, type_map))
+                .collect(),
         }
     }
 }
 
-impl From<&crate::ast::TypeField> for TypeField {
-    fn from(ast_field: &crate::ast::TypeField) -> Self {
+impl TypeField {
+    pub fn from_ast(ast_field: &crate::ast::TypeField, type_map: &std::collections::HashMap<String, usize>) -> Self {
         TypeField {
             name: ast_field.name.clone(),
             kind: match &ast_field.kind {
                 crate::ast::TypeFieldKind::Ff => TypeFieldKind::Ff,
-                crate::ast::TypeFieldKind::Bus(name) => TypeFieldKind::Bus(name.clone()),
+                crate::ast::TypeFieldKind::Bus(name) => {
+                    let index = type_map.get(name)
+                        .expect(&format!("Bus type '{}' not found in type map", name));
+                    TypeFieldKind::Bus(*index)
+                },
             },
             offset: ast_field.offset,
             size: ast_field.size,

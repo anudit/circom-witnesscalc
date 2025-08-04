@@ -599,10 +599,10 @@ fn expand_bus_type(
         let field_path = format!("{}.{}", base_path, field.name);
 
         match &field.kind {
-            vm2::TypeFieldKind::Bus(bus_type_name) => {
+            vm2::TypeFieldKind::Bus(bus_type_index) => {
                 // This field is another bus type
-                let field_type = types.iter().find(|t| t.name == *bus_type_name)
-                    .ok_or_else(|| Box::new(CompilationError::BusTypeNotFound(bus_type_name.to_string())))?;
+                let field_type = types.get(*bus_type_index)
+                    .ok_or_else(|| Box::new(CompilationError::BusTypeNotFound(format!("Bus type index {}", bus_type_index))))?;
 
                 if field.dims.is_empty() {
                     // Single bus instance
@@ -883,8 +883,18 @@ where {
     let input_infos = build_input_info_from_sym(
         sym_content, main_template_id, main_template, &tree.types)?;
     
-    // Convert ast::Type to vm2::Type
-    let types: Vec<vm2::Type> = tree.types.iter().map(Into::into).collect();
+    // Create type name to index mapping
+    let type_map: std::collections::HashMap<String, usize> = tree.types
+        .iter()
+        .enumerate()
+        .map(|(idx, typ)| (typ.name.clone(), idx))
+        .collect();
+    
+    // Convert ast::Type to vm2::Type with the type map
+    let types: Vec<vm2::Type> = tree.types
+        .iter()
+        .map(|typ| vm2::Type::from_ast(typ, &type_map))
+        .collect();
 
     Ok(Circuit {
         main_template_id,

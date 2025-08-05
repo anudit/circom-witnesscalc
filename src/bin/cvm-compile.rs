@@ -1021,6 +1021,11 @@ where
             operand_i64(ctx, cmp_idx);
             ctx.code.push(OpCode::GetTemplateId as u8);
         }
+        I64Expr::GetTemplateSignalPosition(template_id, signal_id) => {
+            operand_i64(ctx, signal_id);
+            operand_i64(ctx, template_id);
+            ctx.code.push(OpCode::GetTemplateSignalPosition as u8);
+        }
     }
     Ok(())
 }

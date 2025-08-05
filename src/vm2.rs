@@ -138,6 +138,11 @@ pub enum OpCode {
     // stack_i64:0 contains the component index
     // Result pushed to stack_i64 (template_id of the component)
     GetTemplateId        = 39,
+    // Get signal position in template
+    // stack_i64:0 contains template_id
+    // stack_i64:-1 contains signal_id
+    // Result pushed to stack_i64 (offset of the signal)
+    GetTemplateSignalPosition = 40,
 }
 
 pub struct Component {
@@ -163,6 +168,25 @@ pub struct Circuit<T: FieldOps> {
 pub enum Signal {
     Ff(Vec<usize>),          // dimensions
     Bus(usize, Vec<usize>),  // bus type index and dimensions
+}
+
+fn calculate_signal_size(signal: &Signal, types: &[Type]) -> usize {
+    match signal {
+        Signal::Ff(dims) => {
+            if dims.is_empty() { 1 } else { dims.iter().product() }
+        }
+        Signal::Bus(type_idx, dims) => {
+            let bus_type = &types[*type_idx];
+            let base_size: usize = bus_type.fields.iter().map(|f| f.size).sum();
+            if dims.is_empty() { base_size } else { base_size * dims.iter().product::<usize>() }
+        }
+    }
+}
+
+fn calculate_signal_offset(signals: &[Signal], signal_id: usize, types: &[Type]) -> usize {
+    signals.iter().take(signal_id)
+        .map(|sig| calculate_signal_size(sig, types))
+        .sum()
 }
 
 impl Signal {
@@ -251,6 +275,10 @@ pub enum RuntimeError {
     InvalidFunctionIndex(usize),
     #[error("Unknown argument type in function call: {0}")]
     UnknownArgumentType(u8),
+    #[error("Invalid template ID: {0}")]
+    InvalidTemplateId(usize),
+    #[error("Signal ID {0} is out of bounds (max {1})")]
+    SignalIdOutOfBounds(usize, usize),
 }
 
 #[derive(Debug, Clone)]
@@ -860,6 +888,9 @@ where
         OpCode::GetTemplateId => {
             output.push_str("GetTemplateId");
         }
+        OpCode::GetTemplateSignalPosition => {
+            output.push_str("GetTemplateSignalPosition");
+        }
     }
 
     (ip, output)
@@ -1445,6 +1476,34 @@ where
                     Some(ref c) => c.template_id as i64
                 };
                 vm.push_i64(template_id);
+            }
+            OpCode::GetTemplateSignalPosition => {
+                let template_id = vm.pop_usize()?;
+                let signal_id = vm.pop_usize()?;
+                
+                if template_id >= circuit.templates.len() {
+                    return Err(Box::new(RuntimeError::InvalidTemplateId(template_id)));
+                }
+                let template = &circuit.templates[template_id];
+                
+                let num_outputs = template.outputs.len();
+                let num_inputs = template.inputs.len();
+                let total_io_signals = num_outputs + num_inputs;
+                
+                if signal_id >= total_io_signals {
+                    return Err(Box::new(RuntimeError::SignalIdOutOfBounds(signal_id, total_io_signals)));
+                }
+                
+                let position = if signal_id < num_outputs {
+                    calculate_signal_offset(&template.outputs, signal_id, &circuit.types)
+                } else {
+                    let output_total_size: usize = template.outputs.iter()
+                        .map(|sig| calculate_signal_size(sig, &circuit.types))
+                        .sum();
+                    output_total_size + calculate_signal_offset(&template.inputs, signal_id - num_outputs, &circuit.types)
+                };
+                
+                vm.push_i64(position as i64);
             }
         }
     }

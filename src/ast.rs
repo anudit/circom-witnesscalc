@@ -364,6 +364,7 @@ pub enum I64Expr {
     Lte(Box<I64Expr>, Box<I64Expr>),
     GetTemplateId(I64Operand),
     GetTemplateSignalPosition(I64Operand, I64Operand), // template_id, signal_id
+    GetTemplateSignalSize(I64Operand, I64Operand), // template_id, signal_id
 }
 
 #[cfg_attr(test, derive(PartialEq, Debug))]

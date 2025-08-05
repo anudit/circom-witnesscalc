@@ -143,6 +143,11 @@ pub enum OpCode {
     // stack_i64:-1 contains signal_id
     // Result pushed to stack_i64 (offset of the signal)
     GetTemplateSignalPosition = 40,
+    // Get signal size in template
+    // stack_i64:0 contains template_id
+    // stack_i64:-1 contains signal_id
+    // Result pushed to stack_i64 (size of the signal)
+    GetTemplateSignalSize = 41,
 }
 
 pub struct Component {
@@ -891,6 +896,9 @@ where
         OpCode::GetTemplateSignalPosition => {
             output.push_str("GetTemplateSignalPosition");
         }
+        OpCode::GetTemplateSignalSize => {
+            output.push_str("GetTemplateSignalSize");
+        }
     }
 
     (ip, output)
@@ -1504,6 +1512,31 @@ where
                 };
                 
                 vm.push_i64(position as i64);
+            }
+            OpCode::GetTemplateSignalSize => {
+                let template_id = vm.pop_usize()?;
+                let signal_id = vm.pop_usize()?;
+                
+                if template_id >= circuit.templates.len() {
+                    return Err(Box::new(RuntimeError::InvalidTemplateId(template_id)));
+                }
+                let template = &circuit.templates[template_id];
+                
+                let num_outputs = template.outputs.len();
+                let num_inputs = template.inputs.len();
+                let total_io_signals = num_outputs + num_inputs;
+                
+                if signal_id >= total_io_signals {
+                    return Err(Box::new(RuntimeError::SignalIdOutOfBounds(signal_id, total_io_signals)));
+                }
+                
+                let size = if signal_id < num_outputs {
+                    calculate_signal_size(&template.outputs[signal_id], &circuit.types)
+                } else {
+                    calculate_signal_size(&template.inputs[signal_id - num_outputs], &circuit.types)
+                };
+                
+                vm.push_i64(size as i64);
             }
         }
     }

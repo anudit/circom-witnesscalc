@@ -159,6 +159,25 @@ pub struct Circuit<T: FieldOps> {
     pub types: Vec<Type>,
 }
 
+#[derive(Debug, Clone)]
+pub enum Signal {
+    Ff(Vec<usize>),          // dimensions
+    Bus(usize, Vec<usize>),  // bus type index and dimensions
+}
+
+impl Signal {
+    pub fn from_ast(ast_signal: &crate::ast::Signal, type_map: &HashMap<String, usize>) -> Self {
+        match ast_signal {
+            crate::ast::Signal::Ff(dims) => Signal::Ff(dims.clone()),
+            crate::ast::Signal::Bus(bus_name, dims) => {
+                let index = type_map.get(bus_name)
+                    .unwrap_or_else(|| panic!("Bus type '{}' not found in type map", bus_name));
+                Signal::Bus(*index, dims.clone())
+            }
+        }
+    }
+}
+
 pub struct Template {
     pub name: String,
     pub code: Vec<u8>,
@@ -167,6 +186,8 @@ pub struct Template {
     pub signals_num: usize,
     pub number_of_inputs: usize,
     pub components: Vec<Option<usize>>,
+    pub inputs: Vec<Signal>,
+    pub outputs: Vec<Signal>,
     // Variable name mappings for debugging
     pub ff_variable_names: HashMap<usize, String>,
     pub i64_variable_names: HashMap<usize, String>,

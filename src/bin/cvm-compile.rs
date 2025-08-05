@@ -600,7 +600,6 @@ fn expand_bus_type(
 
         match &field.kind {
             vm2::TypeFieldKind::Bus(bus_type_index) => {
-                // This field is another bus type
                 let field_type = types.get(*bus_type_index)
                     .ok_or_else(|| Box::new(CompilationError::BusTypeNotFound(format!("Bus type index {}", bus_type_index))))?;
 
@@ -857,12 +856,17 @@ where {
         functions.push(compiled_function);
     }
 
-    // Then compile templates with the function registry
+    let type_map: std::collections::HashMap<String, usize> = tree.types
+        .iter()
+        .enumerate()
+        .map(|(idx, typ)| (typ.name.clone(), idx))
+        .collect();
+
     let mut templates = Vec::new();
 
     for t in tree.templates.iter() {
         let compiled_template = compile_template(
-            t, ff, &function_registry, &tree.types)?;
+            t, ff, &function_registry, &tree.types, &type_map)?;
         templates.push(compiled_template);
         // println!("Template: {}", t.name);
         // println!("Compiled code len: {}", compiled_template.code.len());
@@ -883,14 +887,6 @@ where {
     let input_infos = build_input_info_from_sym(
         sym_content, main_template_id, main_template, &tree.types)?;
     
-    // Create type name to index mapping
-    let type_map: std::collections::HashMap<String, usize> = tree.types
-        .iter()
-        .enumerate()
-        .map(|(idx, typ)| (typ.name.clone(), idx))
-        .collect();
-    
-    // Convert ast::Type to vm2::Type with the type map
     let types: Vec<vm2::Type> = tree.types
         .iter()
         .map(|typ| vm2::Type::from_ast(typ, &type_map))
@@ -1528,6 +1524,7 @@ fn compile_template<F>(
     ff: &F, 
     function_registry: &HashMap<String, usize>,
     types: &[ast::Type],
+    type_map: &HashMap<String, usize>,
 ) -> Result<vm2::Template, Box<dyn Error>>
 where
     for <'a> &'a F: FieldOperations {
@@ -1548,6 +1545,13 @@ where
         i64_variable_names.insert(index as usize, name.clone());
     }
 
+    let inputs = t.inputs.iter()
+        .map(|signal| vm2::Signal::from_ast(signal, type_map))
+        .collect();
+    let outputs = t.outputs.iter()
+        .map(|signal| vm2::Signal::from_ast(signal, type_map))
+        .collect();
+
     Ok(vm2::Template {
         name: t.name.clone(),
         code: ctx.code,
@@ -1556,6 +1560,8 @@ where
         signals_num: t.signals_num,
         number_of_inputs: t.number_of_inputs(types),
         components: t.components.clone(),
+        inputs,
+        outputs,
         ff_variable_names,
         i64_variable_names,
     })
@@ -1649,9 +1655,10 @@ mod tests {
             template7];
         let ff = Field::new(bn254_prime);
         let function_registry = HashMap::new();
+        let empty_type_map = HashMap::new();
         let vm_templates = ast_templates.iter()
             .map(|t| compile_template(
-                t, &ff, &function_registry, &[]).unwrap())
+                t, &ff, &function_registry, &[], &empty_type_map).unwrap())
             .collect::<Vec<_>>();
 
         // Build component tree with template7 (Root) as the main template
@@ -1725,8 +1732,9 @@ mod tests {
         };
         let ff = Field::new(bn254_prime);
         let function_registry = HashMap::new();
+        let empty_type_map = HashMap::new();
         let vm_tmpl = compile_template(
-            &ast_tmpl, &ff, &function_registry, &[]).unwrap();
+            &ast_tmpl, &ff, &function_registry, &[], &empty_type_map).unwrap();
 
         let want_output = "00000000 [Multiplier_0] PushI64: 1
 00000009 [Multiplier_0] LoadSignal

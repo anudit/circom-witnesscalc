@@ -13,6 +13,54 @@ use crate::proto::SignalDescription;
 use crate::proto::vm::{IoDef, IoDefs};
 use crate::vm::{Function, Template};
 use crate::vm2;
+
+fn write_signal<W: Write>(w: &mut W, signal: &vm2::Signal) -> std::io::Result<()> {
+    match signal {
+        vm2::Signal::Ff(dims) => {
+            w.write_u8(0)?; // Signal type: Ff
+            w.write_u32::<LittleEndian>(dims.len() as u32)?;
+            for dim in dims {
+                w.write_u32::<LittleEndian>(*dim as u32)?;
+            }
+        }
+        vm2::Signal::Bus(type_idx, dims) => {
+            w.write_u8(1)?; // Signal type: Bus
+            w.write_u32::<LittleEndian>(*type_idx as u32)?;
+            w.write_u32::<LittleEndian>(dims.len() as u32)?;
+            for dim in dims {
+                w.write_u32::<LittleEndian>(*dim as u32)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn read_signal<R: Read>(r: &mut R) -> std::io::Result<vm2::Signal> {
+    let signal_type = r.read_u8()?;
+    match signal_type {
+        0 => {
+            // Ff signal
+            let num_dims = r.read_u32::<LittleEndian>()? as usize;
+            let mut dims = Vec::with_capacity(num_dims);
+            for _ in 0..num_dims {
+                dims.push(r.read_u32::<LittleEndian>()? as usize);
+            }
+            Ok(vm2::Signal::Ff(dims))
+        }
+        1 => {
+            // Bus signal
+            let type_idx = r.read_u32::<LittleEndian>()? as usize;
+            let num_dims = r.read_u32::<LittleEndian>()? as usize;
+            let mut dims = Vec::with_capacity(num_dims);
+            for _ in 0..num_dims {
+                dims.push(r.read_u32::<LittleEndian>()? as usize);
+            }
+            Ok(vm2::Signal::Bus(type_idx, dims))
+        }
+        _ => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid signal type"))
+    }
+}
+
 // format of the wtns.graph file:
 // + magic line: wtns.graph.001
 // + 4 bytes unsigned LE 32-bit integer: number of nodes
@@ -590,6 +638,16 @@ pub fn serialize_witnesscalc_vm2<T: FieldOps>(
                 }
             }
         }
+        
+        w.write_u32::<LittleEndian>(template.inputs.len() as u32)?;
+        for signal in &template.inputs {
+            write_signal(&mut w, signal)?;
+        }
+        
+        w.write_u32::<LittleEndian>(template.outputs.len() as u32)?;
+        for signal in &template.outputs {
+            write_signal(&mut w, signal)?;
+        }
     }
 
     // Write number of functions
@@ -747,6 +805,18 @@ pub fn deserialize_witnesscalc_vm2_body<T: FieldOps>(
             }
         }
 
+        let num_inputs = r.read_u32::<LittleEndian>()? as usize;
+        let mut inputs = Vec::with_capacity(num_inputs);
+        for _ in 0..num_inputs {
+            inputs.push(read_signal(&mut r)?);
+        }
+        
+        let num_outputs = r.read_u32::<LittleEndian>()? as usize;
+        let mut outputs = Vec::with_capacity(num_outputs);
+        for _ in 0..num_outputs {
+            outputs.push(read_signal(&mut r)?);
+        }
+
         templates.push(vm2::Template {
             name,
             code,
@@ -755,6 +825,8 @@ pub fn deserialize_witnesscalc_vm2_body<T: FieldOps>(
             signals_num,
             number_of_inputs,
             components,
+            inputs,
+            outputs,
             ff_variable_names: HashMap::new(),
             i64_variable_names: HashMap::new(),
         });
@@ -1198,6 +1270,8 @@ mod tests {
                     signals_num: 5,
                     number_of_inputs: 2,
                     components: vec![Some(1), None, Some(2)],
+                    inputs: vec![vm2::Signal::Ff(vec![]), vm2::Signal::Bus(0, vec![2])],
+                    outputs: vec![vm2::Signal::Ff(vec![3])],
                     ff_variable_names: HashMap::new(),
                     i64_variable_names: HashMap::new(),
                 },
@@ -1209,6 +1283,8 @@ mod tests {
                     signals_num: 3,
                     number_of_inputs: 1,
                     components: vec![],
+                    inputs: vec![vm2::Signal::Ff(vec![])],
+                    outputs: vec![vm2::Signal::Ff(vec![])],
                     ff_variable_names: HashMap::new(),
                     i64_variable_names: HashMap::new(),
                 },
@@ -1411,6 +1487,8 @@ mod tests {
                     signals_num: 1,
                     number_of_inputs: 1,
                     components: vec![],
+                    inputs: vec![vm2::Signal::Ff(vec![])],
+                    outputs: vec![vm2::Signal::Ff(vec![])],
                     ff_variable_names: HashMap::new(),
                     i64_variable_names: HashMap::new(),
                 },

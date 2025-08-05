@@ -612,6 +612,8 @@ fn parse_ff_expression(input: &mut &str) -> ModalResult<FfExpr> {
                 .map(|(op1, op2)| FfExpr::Gt(Box::new(op1), Box::new(op2))),
             "ff.shr" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
                 .map(|(op1, op2)| FfExpr::FfShr(Box::new(op1), Box::new(op2))),
+            "ff.shl" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
+                .map(|(op1, op2)| FfExpr::Shl(Box::new(op1), Box::new(op2))),
             "ff.band" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
                 .map(|(op1, op2)| FfExpr::FfBand(Box::new(op1), Box::new(op2))),
             "ff.rem" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))

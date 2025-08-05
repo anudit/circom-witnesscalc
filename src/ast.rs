@@ -341,6 +341,7 @@ pub enum FfExpr {
     FfEq(Box<FfExpr>, Box<FfExpr>),
     FfEqz(Box<FfExpr>),
     FfShr(Box<FfExpr>, Box<FfExpr>),
+    Shl(Box<FfExpr>, Box<FfExpr>),
     FfBand(Box<FfExpr>, Box<FfExpr>),
     Lt(Box<FfExpr>, Box<FfExpr>),
     Gt(Box<FfExpr>, Box<FfExpr>),

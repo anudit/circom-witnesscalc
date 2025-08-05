@@ -148,6 +148,11 @@ pub enum OpCode {
     // stack_i64:-1 contains signal_id
     // Result pushed to stack_i64 (size of the signal)
     GetTemplateSignalSize = 41,
+    // Shift left operation for field elements
+    // stack_ff:0 contains rhs (shift amount)
+    // stack_ff:-1 contains lhs (value to shift)
+    // Result pushed to stack_ff (lhs << rhs)
+    OpShl                = 42,
 }
 
 pub struct Component {
@@ -899,6 +904,9 @@ where
         OpCode::GetTemplateSignalSize => {
             output.push_str("GetTemplateSignalSize");
         }
+        OpCode::OpShl => {
+            output.push_str("OpShl");
+        }
     }
 
     (ip, output)
@@ -1463,6 +1471,15 @@ where
                 #[cfg(feature = "debug_vm2")]
                 {
                     println!("OpShr: {} >> {} = {}", lhs, rhs, vm.peek_ff()?);
+                }
+            }
+            OpCode::OpShl => {
+                let lhs = vm.pop_ff()?;
+                let rhs = vm.pop_ff()?;
+                vm.push_ff(ff.shl(lhs, rhs));
+                #[cfg(feature = "debug_vm2")]
+                {
+                    println!("OpShl: {} << {} = {}", lhs, rhs, vm.peek_ff()?);
                 }
             }
             OpCode::OpBand => {

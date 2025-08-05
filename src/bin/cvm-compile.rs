@@ -1114,6 +1114,11 @@ where
             ff_expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpShr as u8);
         },
+        FfExpr::Shl(lhs, rhs) => {
+            ff_expression(ctx, ff, rhs)?;
+            ff_expression(ctx, ff, lhs)?;
+            ctx.code.push(OpCode::OpShl as u8);
+        },
         FfExpr::FfBand(lhs, rhs) => {
             ff_expression(ctx, ff, rhs)?;
             ff_expression(ctx, ff, lhs)?;

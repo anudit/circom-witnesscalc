@@ -84,8 +84,8 @@ done
 
 pushd "${script_dir}" > /dev/null
 # to build with debug vm2 execution, run:
-cargo build --release --features "debug_vm2"
-# cargo build --release
+# cargo build --release --features "debug_vm2"
+cargo build --release
 popd > /dev/null
 
 function test_circuit() {

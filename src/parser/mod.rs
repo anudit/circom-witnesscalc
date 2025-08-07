@@ -245,6 +245,11 @@ fn parse_call_argument(input: &mut &str) -> ModalResult<CallArgument> {
                 (parse_i64_operand, preceded(literal(","), parse_i64_operand)),
                 literal(")")
             ).map(|(addr, size)| CallArgument::FfMemory { addr, size }),
+            "signal" => delimited(
+                literal("("),
+                (parse_i64_operand, preceded(literal(","), parse_i64_operand)),
+                literal(")")
+            ).map(|(idx, size)| CallArgument::Signal { idx, size }),
             _ => fail::<_, CallArgument, _>,
         },
         // Try to parse literals
@@ -501,6 +506,12 @@ fn parse_statement(input: &mut &str) -> ModalResult<Statement> {
             preceded(space1, parse_ff_expr))
             .map(
                 |(op1, op2, op3)| Statement::SetCmpSignalRun{ cmp_idx: op1, sig_idx: op2, value: op3 }),
+        "set_cmp_input_cnt" => (
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_ff_expr))
+            .map(
+                |(op1, op2, op3)| Statement::SetCmpInputCnt{ cmp_idx: op1, sig_idx: op2, value: op3 }),
         "set_cmp_input_cnt_check" => (
             preceded(space1, parse_i64_operand),
             preceded(space1, parse_i64_operand),
@@ -553,6 +564,8 @@ fn parse_statement(input: &mut &str) -> ModalResult<Statement> {
             preceded(space1, parse_i64_operand))
             .map(
                 |(op1, op2, op3)| Statement::FfMReturn{ dst: op1, src: op2, size: op3 }),
+        "ff.return" => preceded(space1, parse_ff_expression)
+            .map(|value| Statement::FfReturn { value }),
         "ff.mcall" => {
             |i: &mut &str| {
                 // Parse the function name prefixed with $
@@ -575,7 +588,7 @@ fn parse_statement(input: &mut &str) -> ModalResult<Statement> {
 
     // For set_signal, ff.store, set_cmp_input_run, error, ff.mreturn, and ff.mcall, we need to parse the line end
     match &s {
-        Statement::SetSignal { .. } | Statement::FfStore { .. } | Statement::SetCmpSignalRun { .. } | Statement::SetCmpInputCntCheck { .. } | Statement::Error { .. } | Statement::FfMReturn { .. } | Statement::FfMCall { .. } => {
+        Statement::SetSignal { .. } | Statement::FfStore { .. } | Statement::SetCmpSignalRun { .. } | Statement::SetCmpInputCnt { .. } | Statement::SetCmpInputCntCheck { .. } | Statement::Error { .. } | Statement::FfMReturn { .. } | Statement::FfReturn { .. } | Statement::FfMCall { .. } => {
             (space0, opt(parse_eol_comment), parse_line_end).parse_next(input)?;
         }
         _ => {}
@@ -610,14 +623,33 @@ fn parse_ff_expression(input: &mut &str) -> ModalResult<FfExpr> {
                 .map(|(op1, op2)| FfExpr::Lt(Box::new(op1), Box::new(op2))),
             "ff.gt" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
                 .map(|(op1, op2)| FfExpr::Gt(Box::new(op1), Box::new(op2))),
+            "ff.ge" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
+                .map(|(op1, op2)| FfExpr::Ge(Box::new(op1), Box::new(op2))),
             "ff.shr" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
                 .map(|(op1, op2)| FfExpr::FfShr(Box::new(op1), Box::new(op2))),
             "ff.shl" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
                 .map(|(op1, op2)| FfExpr::Shl(Box::new(op1), Box::new(op2))),
             "ff.band" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
                 .map(|(op1, op2)| FfExpr::FfBand(Box::new(op1), Box::new(op2))),
+            "ff.bxor" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
+                .map(|(op1, op2)| FfExpr::Bxor(Box::new(op1), Box::new(op2))),
+            "ff.bor" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
+                .map(|(op1, op2)| FfExpr::Bor(Box::new(op1), Box::new(op2))),
             "ff.rem" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
                 .map(|(op1, op2)| FfExpr::Rem(Box::new(op1), Box::new(op2))),
+            "ff.call" => {
+                |i: &mut &str| {
+                    // Parse the function name prefixed with $
+                    let _ = space1.parse_next(i)?;
+                    let _ = literal("$").parse_next(i)?;
+                    let name = parse_variable_name.parse_next(i)?;
+                    
+                    // Parse arguments using the same pattern as ff.mcall
+                    let args = repeat(0.., preceded(space1, parse_call_argument)).parse_next(i)?;
+                    
+                    Ok(FfExpr::Call { name: name.to_string(), args })
+                }
+            },
             _ => fail::<_, FfExpr, _>,
         },
         // Try to parse as a literal

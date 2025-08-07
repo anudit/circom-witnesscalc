@@ -153,6 +153,29 @@ pub enum OpCode {
     // stack_ff:-1 contains lhs (value to shift)
     // Result pushed to stack_ff (lhs << rhs)
     OpShl                = 42,
+    // Return from function with single field element
+    // stack_ff:0 contains the return value
+    FfReturn             = 43,
+    // Bitwise XOR operation for field elements
+    // stack_ff:0 contains rhs
+    // stack_ff:-1 contains lhs
+    // Result pushed to stack_ff (lhs ^ rhs)
+    OpBxor               = 44,
+    // Bitwise OR operation for field elements
+    // stack_ff:0 contains rhs
+    // stack_ff:-1 contains lhs
+    // Result pushed to stack_ff (lhs | rhs)
+    OpBor                = 45,
+    // Greater than or equal comparison for field elements
+    // stack_ff:0 contains rhs
+    // stack_ff:-1 contains lhs
+    // Result pushed to stack_ff (lhs >= rhs)
+    OpGe                 = 46,
+    // Store component input and decrement counter without checking
+    // stack_ff contains the value to store
+    // stack_i64:0 contains the signal index
+    // stack_i64:-1 contains the component index
+    StoreCmpInputCnt     = 47,
 }
 
 pub struct Component {
@@ -392,6 +415,7 @@ fn calculate_args_size<T: FieldOps>(code: &[u8], arg_count: u8) -> Result<usize,
             3 => offset += 8,  // i64 variable
             4..=7 => offset += 16, // ff.memory (addr + size, both i64)
             8..=11 => offset += 16, // i64.memory (addr + size, both i64)
+            12..=15 => offset += 16, // signal (idx + size, both i64)
             _ => return Err(RuntimeError::CodeIndexOutOfBounds),
         }
     }
@@ -399,7 +423,7 @@ fn calculate_args_size<T: FieldOps>(code: &[u8], arg_count: u8) -> Result<usize,
 }
 
 // Helper function to process function arguments
-fn process_function_arguments<T: FieldOps>(vm: &mut VM<T>, code: &[u8], arg_count: u8) -> Result<(), RuntimeError> {
+fn process_function_arguments<T: FieldOps>(vm: &mut VM<T>, signals: &[Option<T>], code: &[u8], arg_count: u8, component_signals_start: usize) -> Result<(), RuntimeError> {
     let mut offset = 0;
     let mut ff_arg_idx = 0;
     let mut i64_arg_idx = 0;
@@ -602,6 +626,69 @@ fn process_function_arguments<T: FieldOps>(vm: &mut VM<T>, code: &[u8], arg_coun
                 }
                 
                 i64_arg_idx += size;
+            }
+            12..=15 => { // signal argument (only valid in component context)
+                // Decode bit flags
+                let idx_is_variable = (arg_type & 1) != 0;
+                let size_is_variable = (arg_type & 2) != 0;
+                
+                // Get caller's context from the call frame we just pushed
+                let frame = vm.call_stack.last()
+                    .ok_or(RuntimeError::CallStackUnderflow)?;
+                let caller_stack_base = frame.return_stack_base_pointer_i64;
+                
+                // Read and resolve signal index
+                let signal_idx = if idx_is_variable {
+                    // It's a variable index - need to load from caller's stack
+                    let var_idx = i64::from_le_bytes(code[offset..offset+8].try_into().unwrap()) as usize;
+                    offset += 8;
+                    
+                    *vm.stack_i64.get(caller_stack_base + var_idx)
+                        .and_then(|v| v.as_ref())
+                        .ok_or(RuntimeError::StackVariableIsNotSet)? as usize
+                } else {
+                    // It's a literal value
+                    let value = i64::from_le_bytes(code[offset..offset+8].try_into().unwrap());
+                    offset += 8;
+                    value as usize
+                };
+                
+                // Read and resolve size
+                let size = if size_is_variable {
+                    // It's a variable index - need to load from caller's stack
+                    let var_idx = i64::from_le_bytes(code[offset..offset+8].try_into().unwrap()) as usize;
+                    offset += 8;
+                    
+                    *vm.stack_i64.get(caller_stack_base + var_idx)
+                        .and_then(|v| v.as_ref())
+                        .ok_or(RuntimeError::StackVariableIsNotSet)? as usize
+                } else {
+                    // It's a literal value
+                    let value = i64::from_le_bytes(code[offset..offset+8].try_into().unwrap());
+                    offset += 8;
+                    value as usize
+                };
+                
+                // Copy from component signals to function's memory
+                let dst_base = vm.memory_base_pointer_ff + ff_arg_idx;
+                if vm.memory_ff.len() <= dst_base + size {
+                    vm.memory_ff.resize(dst_base + size, None);
+                }
+
+                // Add component's base signal offset to the signal index
+                let absolute_signal_idx = component_signals_start + signal_idx;
+                
+                // Check that all signal values are set before copying
+                for i in 0..size {
+                    if signals[absolute_signal_idx + i].is_none() {
+                        return Err(RuntimeError::SignalIsNotSet);
+                    }
+                }
+
+                vm.memory_ff[dst_base..(size + dst_base)].copy_from_slice(
+                    &signals[absolute_signal_idx..(size + absolute_signal_idx)]);
+
+                ff_arg_idx += size;
             }
             _ => return Err(RuntimeError::UnknownArgumentType(arg_type)),
         }
@@ -822,13 +909,19 @@ where
                         
                         output.push_str("ff.memory(");
                         if addr_is_variable {
-                            output.push_str(&format!("var[{}]", addr_val));
+                            let var_name = i64_variable_names.get(&(addr_val as usize))
+                                .map(|s| format!(" ({})", s))
+                                .unwrap_or_default();
+                            output.push_str(&format!("var[{}]{}", addr_val, var_name));
                         } else {
                             output.push_str(&format!("{}", addr_val));
                         }
                         output.push(',');
                         if size_is_variable {
-                            output.push_str(&format!("var[{}]", size_val));
+                            let var_name = i64_variable_names.get(&(size_val as usize))
+                                .map(|s| format!(" ({})", s))
+                                .unwrap_or_default();
+                            output.push_str(&format!("var[{}]{}", size_val, var_name));
                         } else {
                             output.push_str(&format!("{}", size_val));
                         }
@@ -845,13 +938,48 @@ where
                         
                         output.push_str("i64.memory(");
                         if addr_is_variable {
-                            output.push_str(&format!("var[{}]", addr_val));
+                            let var_name = i64_variable_names.get(&(addr_val as usize))
+                                .map(|s| format!(" ({})", s))
+                                .unwrap_or_default();
+                            output.push_str(&format!("var[{}]{}", addr_val, var_name));
                         } else {
                             output.push_str(&format!("{}", addr_val));
                         }
                         output.push(',');
                         if size_is_variable {
-                            output.push_str(&format!("var[{}]", size_val));
+                            let var_name = i64_variable_names.get(&(size_val as usize))
+                                .map(|s| format!(" ({})", s))
+                                .unwrap_or_default();
+                            output.push_str(&format!("var[{}]{}", size_val, var_name));
+                        } else {
+                            output.push_str(&format!("{}", size_val));
+                        }
+                        output.push(')');
+                    }
+                    12..=15 => { // signal
+                        let idx_is_variable = (arg_type & 1) != 0;
+                        let size_is_variable = (arg_type & 2) != 0;
+                        
+                        let idx_val = i64::from_le_bytes((&code[ip..ip+8]).try_into().unwrap());
+                        ip += 8;
+                        let size_val = i64::from_le_bytes((&code[ip..ip+8]).try_into().unwrap());
+                        ip += 8;
+                        
+                        output.push_str("signal(");
+                        if idx_is_variable {
+                            let var_name = i64_variable_names.get(&(idx_val as usize))
+                                .map(|s| format!(" ({})", s))
+                                .unwrap_or_default();
+                            output.push_str(&format!("var[{}]{}", idx_val, var_name));
+                        } else {
+                            output.push_str(&format!("{}", idx_val));
+                        }
+                        output.push(',');
+                        if size_is_variable {
+                            let var_name = i64_variable_names.get(&(size_val as usize))
+                                .map(|s| format!(" ({})", s))
+                                .unwrap_or_default();
+                            output.push_str(&format!("var[{}]{}", size_val, var_name));
                         } else {
                             output.push_str(&format!("{}", size_val));
                         }
@@ -907,6 +1035,21 @@ where
         OpCode::OpShl => {
             output.push_str("OpShl");
         }
+        OpCode::FfReturn => {
+            output.push_str("FfReturn");
+        }
+        OpCode::OpBxor => {
+            output.push_str("OpBxor");
+        }
+        OpCode::OpBor => {
+            output.push_str("OpBor");
+        }
+        OpCode::OpGe => {
+            output.push_str("OpGe");
+        }
+        OpCode::StoreCmpInputCnt => {
+            output.push_str("StoreCmpInputCnt");
+        }
     }
 
     (ip, output)
@@ -925,6 +1068,7 @@ where
 }
 
 // Helper function to get the currently executing template/function
+#[cfg(feature = "debug_vm2")]
 fn get_current_context<'a, T: FieldOps>(
     vm: &VM<T>,
     circuit: &'a Circuit<T>,
@@ -946,11 +1090,30 @@ fn get_current_context<'a, T: FieldOps>(
     }
 }
 
+#[cfg(not(feature = "debug_vm2"))]
+fn get_current_context<'a, T: FieldOps>(
+    vm: &VM<T>,
+    circuit: &'a Circuit<T>,
+    component_tree: &Component,
+) -> &'a [u8] {
+    match vm.current_execution_context {
+        ExecutionContext::Template =>
+            &circuit.templates[component_tree.template_id].code,
+        ExecutionContext::Function(func_idx) =>
+            &circuit.functions[func_idx].code,
+    }
+}
+
 pub fn execute<F, T: FieldOps>(
     circuit: &Circuit<T>, signals: &mut [Option<T>], ff: &F,
     component_tree: &mut Component) -> Result<(), Box<dyn Error>>
 where
     for <'a> &'a F: FieldOperations<Type = T> {
+
+    component_tree.components.iter_mut()
+        .filter_map(|x| x.as_mut())
+        .filter(|x| x.number_of_inputs == 0)
+        .try_for_each(|c| execute(circuit, signals, ff, c))?;
 
     let mut ip: usize = 0;
     let mut vm = VM::<T>::new();
@@ -962,7 +1125,10 @@ where
     vm.stack_i64.resize_with(
         circuit.templates[component_tree.template_id].vars_i64_num, || None);
 
+    #[cfg(feature = "debug_vm2")]
     let (mut code, mut name, mut ff_variable_names, mut i64_variable_names) = get_current_context(&vm, circuit, component_tree);
+    #[cfg(not(feature = "debug_vm2"))]
+    let mut code = get_current_context(&vm, circuit, component_tree);
 
     'label: loop {
         if ip == code.len() {
@@ -979,6 +1145,7 @@ where
             }
         }
 
+        #[cfg(feature = "debug_vm2")]
         disassemble_instruction::<T>(
             code, ip, name, ff_variable_names, i64_variable_names);
 
@@ -1192,6 +1359,36 @@ where
                     }
                 }
             }
+            OpCode::StoreCmpInputCnt => {
+                let sig_idx = vm.pop_usize()?;
+                let cmp_idx = vm.pop_usize()?;
+                let value = vm.pop_ff()?;
+                match component_tree.components[cmp_idx] {
+                    None => {
+                        return Err(
+                            Box::new(RuntimeError::UninitializedComponent))
+                    }
+                    Some(ref mut c) => {
+                        match signals[c.signals_start + sig_idx] {
+                            Some(_) => {
+                                return Err(Box::new(RuntimeError::SignalIsAlreadySet));
+                            }
+                            None => {
+                                signals[c.signals_start + sig_idx] = Some(value);
+                            }
+                        }
+                        c.number_of_inputs -= 1;
+                        #[cfg(feature = "debug_vm2")]
+                        {
+                            println!(
+                                "StoreCmpInputCnt [S{}]: {}[{}/{}] = {}, inputs left: {}, template: {}",
+                                c.signals_start + sig_idx, cmp_idx, c.signals_start, sig_idx, value,
+                                c.number_of_inputs, circuit.templates[c.template_id].name);
+                        }
+                        // Skip the check for c.number_of_inputs == 0 and component execution
+                    }
+                }
+            }
             OpCode::StoreCmpInput => {
                 let sig_idx = vm.pop_usize()?;
                 let cmp_idx = vm.pop_usize()?;
@@ -1305,9 +1502,6 @@ where
                 let call_frame = vm.call_stack.pop()
                     .ok_or(RuntimeError::CallStackUnderflow)?;
                 
-                eprintln!("DEBUG FfMReturn: current ip={:08x}, return_ip={:08x}", ip, call_frame.return_ip);
-                eprintln!("DEBUG FfMReturn: current context={:?}, return context={:?}", vm.current_execution_context, call_frame.return_context);
-                
                 // Copy memory from function's space to caller's space
                 for i in 0..size {
                     let src_idx = src_addr + i + vm.memory_base_pointer_ff;
@@ -1332,8 +1526,14 @@ where
                 vm.memory_base_pointer_i64 = call_frame.return_memory_base_pointer_i64;
                 
                 // Switch back to caller's execution context
-                (code, name, ff_variable_names, i64_variable_names) = get_current_context(&vm, circuit, component_tree);
-                eprintln!("DEBUG FfMReturn: after restoration ip={:08x}, template={}", ip, name);
+                #[cfg(feature = "debug_vm2")]
+                {
+                    (code, name, ff_variable_names, i64_variable_names) = get_current_context(&vm, circuit, component_tree);
+                }
+                #[cfg(not(feature = "debug_vm2"))]
+                {
+                    code = get_current_context(&vm, circuit, component_tree);
+                }
             }
             OpCode::FfMCall => {
                 // Check call stack depth
@@ -1376,11 +1576,47 @@ where
                 vm.stack_i64.resize(vm.stack_base_pointer_i64 + circuit.functions[func_idx].vars_i64_num, None);
                 
                 // Process arguments and copy to function memory
-                process_function_arguments(&mut vm, &code[ip..], arg_count)?;
+                process_function_arguments(&mut vm, signals, &code[ip..], arg_count, component_tree.signals_start)?;
                 
                 // Switch to function execution context
-                (code, name, ff_variable_names, i64_variable_names) = get_current_context(&vm, circuit, component_tree);
+                #[cfg(feature = "debug_vm2")]
+                {
+                    (code, name, ff_variable_names, i64_variable_names) = get_current_context(&vm, circuit, component_tree);
+                }
+                #[cfg(not(feature = "debug_vm2"))]
+                {
+                    code = get_current_context(&vm, circuit, component_tree);
+                }
                 ip = 0; // Start executing function from beginning
+            }
+            OpCode::FfReturn => {
+                // Pop the return value from stack
+                let return_value = vm.pop_ff()?;
+                
+                // Pop call frame to get return context
+                let call_frame = vm.call_stack.pop()
+                    .ok_or(RuntimeError::CallStackUnderflow)?;
+                
+                // Restore execution context
+                ip = call_frame.return_ip;
+                vm.current_execution_context = call_frame.return_context;
+                vm.stack_base_pointer_ff = call_frame.return_stack_base_pointer_ff;
+                vm.stack_base_pointer_i64 = call_frame.return_stack_base_pointer_i64;
+                vm.memory_base_pointer_ff = call_frame.return_memory_base_pointer_ff;
+                vm.memory_base_pointer_i64 = call_frame.return_memory_base_pointer_i64;
+                
+                // Push return value to caller's stack
+                vm.push_ff(return_value);
+                
+                // Switch back to caller's execution context
+                #[cfg(feature = "debug_vm2")]
+                {
+                    (code, name, ff_variable_names, i64_variable_names) = get_current_context(&vm, circuit, component_tree);
+                }
+                #[cfg(not(feature = "debug_vm2"))]
+                {
+                    code = get_current_context(&vm, circuit, component_tree);
+                }
             }
             OpCode::FfStore => {
                 let addr: usize = vm.pop_i64()?.try_into()
@@ -1445,6 +1681,16 @@ where
                 }
                 vm.push_ff(result);
             }
+            OpCode::OpGe => {
+                let lhs = vm.pop_ff()?;
+                let rhs = vm.pop_ff()?;
+                let result = ff.gte(lhs, rhs);
+                #[cfg(feature = "debug_vm2")]
+                {
+                    println!("OpGe: {} >= {} = {}", lhs, rhs, result);
+                }
+                vm.push_ff(result);
+            }
             OpCode::OpI64Mul => {
                 let lhs = vm.pop_i64()?;
                 let rhs = vm.pop_i64()?;
@@ -1486,6 +1732,16 @@ where
                 let lhs = vm.pop_ff()?;
                 let rhs = vm.pop_ff()?;
                 vm.push_ff(ff.band(lhs, rhs));
+            }
+            OpCode::OpBxor => {
+                let lhs = vm.pop_ff()?;
+                let rhs = vm.pop_ff()?;
+                vm.push_ff(ff.bxor(lhs, rhs));
+            }
+            OpCode::OpBor => {
+                let lhs = vm.pop_ff()?;
+                let rhs = vm.pop_ff()?;
+                vm.push_ff(ff.bor(lhs, rhs));
             }
             OpCode::OpRem => {
                 let lhs = vm.pop_ff()?;
@@ -1617,9 +1873,6 @@ impl TypeField {
 mod tests {
     #[test]
     fn test_ok() {
-        let x: &[u8] = &[1, 2, 3];
-        let x2 = x.get(2..4);
-
-        println!("{:?}", x2);
+        println!("OK");
     }
 }

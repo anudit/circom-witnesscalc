@@ -4,14 +4,21 @@ use std::error::Error;
 use std::fs::File;
 use std::io::{Write};
 use std::path::Path;
+use std::time::Instant;
 use num_bigint::BigUint;
 use num_traits::{Num, ToBytes};
 use wtns_file::FieldElement;
 use circom_witnesscalc::{ast, vm2, wtns_from_witness2};
-use circom_witnesscalc::ast::{Expr, FfExpr, I64Expr, Statement};
-use circom_witnesscalc::field::{bn254_prime, Field, FieldOperations, FieldOps, U254};
+use circom_witnesscalc::ast::{Expr, FfExpr, I64Expr, I64Operand, Statement};
+use circom_witnesscalc::field::{bn254_prime, Field, FieldOperations, FieldOps};
+#[cfg(feature = "debug_vm2")]
+use circom_witnesscalc::field::U254;
 use circom_witnesscalc::parser::parse;
-use circom_witnesscalc::vm2::{disassemble_instruction, execute, Circuit, Component, OpCode, Template, InputInfo, Function};
+use circom_witnesscalc::vm2::{execute, Circuit, Component, OpCode, InputInfo,};
+#[cfg(feature = "debug_vm2")]
+use circom_witnesscalc::vm2::{Template, Function};
+#[cfg(feature = "debug_vm2")]
+use circom_witnesscalc::vm2::disassemble_instruction;
 
 struct WantWtns {
     wtns_file: String,
@@ -159,11 +166,14 @@ fn main() {
         let ff = Field::new(bn254_prime);
         let sym_content = fs::read_to_string(&args.sym_file).unwrap();
         let circuit = compile(&ff, &program, &sym_content).unwrap();
-        for t in &circuit.templates {
-            disassemble::<U254>(&TF::T(t))
-        }
-        for f in &circuit.functions {
-            disassemble::<U254>(&TF::F(f))
+        #[cfg(feature = "debug_vm2")]
+        {
+            for t in &circuit.templates {
+                disassemble::<U254>(&TF::T(t))
+            }
+            for f in &circuit.functions {
+                disassemble::<U254>(&TF::F(f))
+            }
         }
         if args.want_wtns.is_some() {
             calculate_witness(&circuit, args.want_wtns.unwrap()).unwrap();
@@ -216,6 +226,7 @@ fn build_component_tree(
 }
 
 /// Print component tree for debugging
+#[cfg(feature = "debug_vm2")]
 fn print_component_tree(component: &Component, templates: &[Template], indent: usize) {
     let indent_str = "  ".repeat(indent);
     let template_name = &templates[component.template_id].name;
@@ -240,7 +251,7 @@ fn print_component_tree(component: &Component, templates: &[Template], indent: u
 }
 
 /// Debug helper to print the entire component tree
-#[allow(dead_code)]
+#[cfg(feature = "debug_vm2")]
 fn debug_component_tree(component: &Component, templates: &[Template]) {
     println!("\n=== Component Tree ===");
     print_component_tree(component, templates, 0);
@@ -250,12 +261,16 @@ fn debug_component_tree(component: &Component, templates: &[Template]) {
 fn calculate_witness<T: FieldOps>(
     circuit: &Circuit<T>, want_wtns: WantWtns) -> Result<(), Box<dyn Error>> {
 
+    let start = Instant::now();
+
     let mut signals = init_signals(
         &want_wtns.inputs_file, circuit.signals_num, &circuit.field,
         &circuit.types, &circuit.input_infos)?;
 
     let mut component_tree = build_component_tree(
         circuit.main_template_id, &circuit.templates);
+
+    #[cfg(feature = "debug_vm2")]
     debug_component_tree(&component_tree, &circuit.templates);
 
     execute(circuit, &mut signals, &circuit.field, &mut component_tree)?;
@@ -266,7 +281,9 @@ fn calculate_witness<T: FieldOps>(
     file.write_all(&wtns_data)?;
     file.flush()?;
 
-    println!("Witness saved to {}", want_wtns.wtns_file);
+    println!(
+        "Witness saved to {}, calculated in {:?}", want_wtns.wtns_file,
+        start.elapsed());
     Ok(())
 }
 
@@ -791,11 +808,13 @@ fn witness<T: FieldOps>(signals: &[Option<T>], witness_signals: &[usize], prime:
 
 }
 
+#[cfg(feature = "debug_vm2")]
 enum TF<'a> {
     T(&'a Template),
     F(&'a Function),
 }
 
+#[cfg(feature = "debug_vm2")]
 impl TF<'_> {
     fn code(&self) -> &[u8] {
         match self {
@@ -823,6 +842,7 @@ impl TF<'_> {
     }
 }
 
+#[cfg(feature = "debug_vm2")]
 fn disassemble<T: FieldOps>(tf: &TF) {
     match tf {
         TF::T(t) => {
@@ -851,12 +871,15 @@ where {
     let mut function_registry = HashMap::new();
 
     for (i, f) in tree.functions.iter().enumerate() {
-        let compiled_function = compile_function(f, ff, &function_registry)?;
         function_registry.insert(f.name.clone(), i);
+    }
+
+    for f in tree.functions.iter() {
+        let compiled_function = compile_function(f, ff, &function_registry)?;
         functions.push(compiled_function);
     }
 
-    let type_map: std::collections::HashMap<String, usize> = tree.types
+    let type_map: HashMap<String, usize> = tree.types
         .iter()
         .enumerate()
         .map(|(idx, typ)| (typ.name.clone(), idx))
@@ -955,17 +978,29 @@ impl<'a> TemplateCompilationContext<'a> {
         *self.i64_variable_indexes
             .entry(var_name.to_string()).or_insert(next_idx)
     }
+
+    fn append_i64operand(&mut self, operand: &I64Operand) {
+        match operand {
+            I64Operand::Literal(v) => {
+                self.code.extend_from_slice(&v.to_le_bytes());
+            }
+            I64Operand::Variable(var_name) => {
+                let var_idx = self.get_i64_variable_index(var_name);
+                self.code.extend_from_slice(&var_idx.to_le_bytes());
+            }
+        }
+    }
 }
 
 fn operand_i64<'a>(
-    ctx: &mut TemplateCompilationContext<'a>, operand: &ast::I64Operand) {
+    ctx: &mut TemplateCompilationContext<'a>, operand: &I64Operand) {
 
     match operand {
-        ast::I64Operand::Literal(v) => {
+        I64Operand::Literal(v) => {
             ctx.code.push(OpCode::PushI64 as u8);
             ctx.code.extend_from_slice(v.to_le_bytes().as_slice());
         }
-        ast::I64Operand::Variable(var_name) => {
+        I64Operand::Variable(var_name) => {
             let var_idx = ctx.get_i64_variable_index(var_name);
             ctx.code.push(OpCode::LoadVariableI64 as u8);
             ctx.code.extend_from_slice(var_idx.to_le_bytes().as_slice());
@@ -1109,6 +1144,11 @@ where
             ff_expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpGt as u8);
         },
+        FfExpr::Ge(lhs, rhs) => {
+            ff_expression(ctx, ff, rhs)?;
+            ff_expression(ctx, ff, lhs)?;
+            ctx.code.push(OpCode::OpGe as u8);
+        },
         FfExpr::FfShr(lhs, rhs) => {
             ff_expression(ctx, ff, rhs)?;
             ff_expression(ctx, ff, lhs)?;
@@ -1124,10 +1164,88 @@ where
             ff_expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpBand as u8);
         },
+        FfExpr::Bxor(lhs, rhs) => {
+            ff_expression(ctx, ff, rhs)?;
+            ff_expression(ctx, ff, lhs)?;
+            ctx.code.push(OpCode::OpBxor as u8);
+        },
+        FfExpr::Bor(lhs, rhs) => {
+            ff_expression(ctx, ff, rhs)?;
+            ff_expression(ctx, ff, lhs)?;
+            ctx.code.push(OpCode::OpBor as u8);
+        },
         FfExpr::Rem(lhs, rhs) => {
             ff_expression(ctx, ff, rhs)?;
             ff_expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpRem as u8);
+        },
+        FfExpr::Call { name: function_name, args } => {
+            // Reuse FfMCall opcode for ff.call expressions
+            ctx.code.push(OpCode::FfMCall as u8);
+
+            // Look up function by name to get its index
+            let func_idx = *ctx.function_registry.get(function_name)
+                .ok_or_else(|| format!("Function '{}' not found", function_name))?;
+            let func_idx: u32 = func_idx.try_into()
+                .map_err(|_| "Function index too large")?;
+            ctx.code.extend_from_slice(&func_idx.to_le_bytes());
+
+            // Emit argument count
+            ctx.code.push(args.len() as u8);
+
+            // Emit each argument (same as FfMCall statement)
+            for arg in args {
+                match arg {
+                    ast::CallArgument::I64Literal(value) => {
+                        ctx.code.push(0); // arg type 0 = i64 literal
+                        ctx.code.extend_from_slice(&value.to_le_bytes());
+                    }
+                    ast::CallArgument::FfLiteral(value) => {
+                        ctx.code.push(1); // arg type 1 = ff literal
+                        let x = ff.parse_le_bytes(value.to_le_bytes().as_slice())?;
+                        ctx.code.extend_from_slice(x.to_le_bytes().as_slice());
+                    }
+                    ast::CallArgument::Variable(var_name) => {
+                        // Look up variable type in registry
+                        match ctx.variable_types.get(var_name) {
+                            Some(VariableType::Ff) => {
+                                ctx.code.push(2); // arg type 2 = ff variable
+                                let var_idx = ctx.get_ff_variable_index(var_name);
+                                ctx.code.extend_from_slice(&var_idx.to_le_bytes());
+                            }
+                            Some(VariableType::I64) => {
+                                ctx.code.push(3); // arg type 3 = i64 variable
+                                let var_idx = ctx.get_i64_variable_index(var_name);
+                                ctx.code.extend_from_slice(&var_idx.to_le_bytes());
+                            }
+                            None => {
+                                return Err(format!("Variable '{}' not found", var_name).into());
+                            }
+                        }
+                    }
+                    ast::CallArgument::I64Memory { addr, size } => {
+                        // i64.memory uses types 8-11 (base 8 = 0b1000)
+                        let arg_type = calc_arg_type(8u8, addr, size);
+                        ctx.code.push(arg_type);
+                        ctx.append_i64operand(addr);
+                        ctx.append_i64operand(size);
+                    }
+                    ast::CallArgument::FfMemory { addr, size } => {
+                        // ff.memory uses types 4-7 (base 4 = 0b0100)
+                        let arg_type = calc_arg_type(4u8, addr, size);
+                        ctx.code.push(arg_type);
+                        ctx.append_i64operand(addr);
+                        ctx.append_i64operand(size);
+                    }
+                    ast::CallArgument::Signal { idx, size } => {
+                        // signal uses types 12-15 (base 12 = 0b1100)
+                        let arg_type = calc_arg_type(12u8, idx, size);
+                        ctx.code.push(arg_type);
+                        ctx.append_i64operand(idx);
+                        ctx.append_i64operand(size);
+                    }
+                }
+            }
         },
     };
     Ok(())
@@ -1206,6 +1324,12 @@ where
             operand_i64(ctx, sig_idx);
             ff_expression(ctx, ff, value)?;
             ctx.code.push(OpCode::StoreCmpSignalAndRun as u8);
+        },
+        Statement::SetCmpInputCnt { cmp_idx, sig_idx, value } => {
+            operand_i64(ctx, cmp_idx);
+            operand_i64(ctx, sig_idx);
+            ff_expression(ctx, ff, value)?;
+            ctx.code.push(OpCode::StoreCmpInputCnt as u8);
         },
         Statement::SetCmpInputCntCheck { cmp_idx, sig_idx, value } => {
             operand_i64(ctx, cmp_idx);
@@ -1314,6 +1438,10 @@ where
             operand_i64(ctx, size);
             ctx.code.push(OpCode::FfMReturn as u8);
         },
+        Statement::FfReturn { value } => {
+            ff_expression(ctx, ff, value)?;
+            ctx.code.push(OpCode::FfReturn as u8);
+        },
         Statement::FfMCall { name: function_name, args } => {
             // Emit the FfMCall opcode
             ctx.code.push(OpCode::FfMCall as u8);
@@ -1360,73 +1488,24 @@ where
                     }
                     ast::CallArgument::I64Memory { addr, size } => {
                         // i64.memory uses types 8-11 (base 8 = 0b1000)
-                        let mut arg_type = 8u8;
-
-                        // Set bit 0 if addr is a variable
-                        if matches!(addr, ast::I64Operand::Variable(_)) {
-                            arg_type |= 1;
-                        }
-
-                        // Set bit 1 if size is a variable
-                        if matches!(size, ast::I64Operand::Variable(_)) {
-                            arg_type |= 2;
-                        }
-
+                        let arg_type = calc_arg_type(8u8, addr, size);
                         ctx.code.push(arg_type);
-
-                        match addr {
-                            ast::I64Operand::Literal(v) => {
-                                ctx.code.extend_from_slice(&v.to_le_bytes());
-                            }
-                            ast::I64Operand::Variable(var_name) => {
-                                let var_idx = ctx.get_i64_variable_index(var_name);
-                                ctx.code.extend_from_slice(&var_idx.to_le_bytes());
-                            }
-                        }
-                        match size {
-                            ast::I64Operand::Literal(v) => {
-                                ctx.code.extend_from_slice(&v.to_le_bytes());
-                            }
-                            ast::I64Operand::Variable(var_name) => {
-                                let var_idx = ctx.get_i64_variable_index(var_name);
-                                ctx.code.extend_from_slice(&var_idx.to_le_bytes());
-                            }
-                        }
+                        ctx.append_i64operand(addr);
+                        ctx.append_i64operand(size);
                     }
                     ast::CallArgument::FfMemory { addr, size } => {
                         // ff.memory uses types 4-7 (base 4 = 0b0100)
-                        let mut arg_type = 4u8;
-
-                        // Set bit 0 if addr is a variable
-                        if matches!(addr, ast::I64Operand::Variable(_)) {
-                            arg_type |= 1;
-                        }
-
-                        // Set bit 1 if size is a variable
-                        if matches!(size, ast::I64Operand::Variable(_)) {
-                            arg_type |= 2;
-                        }
-
+                        let arg_type = calc_arg_type(4u8, addr, size);
                         ctx.code.push(arg_type);
-
-                        match addr {
-                            ast::I64Operand::Literal(v) => {
-                                ctx.code.extend_from_slice(&v.to_le_bytes());
-                            }
-                            ast::I64Operand::Variable(var_name) => {
-                                let var_idx = ctx.get_i64_variable_index(var_name);
-                                ctx.code.extend_from_slice(&var_idx.to_le_bytes());
-                            }
-                        }
-                        match size {
-                            ast::I64Operand::Literal(v) => {
-                                ctx.code.extend_from_slice(&v.to_le_bytes());
-                            }
-                            ast::I64Operand::Variable(var_name) => {
-                                let var_idx = ctx.get_i64_variable_index(var_name);
-                                ctx.code.extend_from_slice(&var_idx.to_le_bytes());
-                            }
-                        }
+                        ctx.append_i64operand(addr);
+                        ctx.append_i64operand(size);
+                    }
+                    ast::CallArgument::Signal { idx, size } => {
+                        // signal uses types 12-15 (base 12 = 0b1100)
+                        let arg_type = calc_arg_type(12u8, idx, size);
+                        ctx.code.push(arg_type);
+                        ctx.append_i64operand(idx);
+                        ctx.append_i64operand(size);
                     }
                 }
             }
@@ -1436,6 +1515,22 @@ where
         }
     }
     Ok(())
+}
+
+// Calculate the argument type based on the base value. The base value should
+// have two lowest bits set to zero. Depending on first and second arguments,
+// we set the bits 0 or 1 to indicate if the argument is a variable or a literal.
+fn calc_arg_type(base: u8, arg1: &I64Operand, arg2: &I64Operand) -> u8 {
+    let mut arg_type = base;
+    match arg1 {
+        I64Operand::Variable(_) => { arg_type |= 1; }
+        I64Operand::Literal(_) => (),
+    }
+    match arg2 {
+        I64Operand::Variable(_) => { arg_type |= 2; }
+        I64Operand::Literal(_) => (),
+    }
+    arg_type
 }
 
 fn block<'a, F>(
@@ -1502,15 +1597,6 @@ where
     let mut ctx = TemplateCompilationContext::new(function_registry);
     for i in &f.body {
         instruction(&mut ctx, ff, i)?;
-    }
-
-    println!("i64 variables:");
-    for (x, y) in ctx.i64_variable_indexes.iter() {
-        println!("{} {}", x, y);
-    }
-    println!("ff variables:");
-    for (x, y) in ctx.ff_variable_indexes.iter() {
-        println!("{} {}", x, y);
     }
 
     // Build reverse mappings for variable names (index -> name)

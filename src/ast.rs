@@ -255,12 +255,14 @@ pub struct Function {
 }
 
 #[cfg_attr(test, derive(PartialEq, Debug))]
+#[derive(Clone)]
 pub enum CallArgument {
     Variable(String),
     I64Literal(i64),
     FfLiteral(BigUint),
     I64Memory { addr: I64Operand, size: I64Operand },
     FfMemory { addr: I64Operand, size: I64Operand },
+    Signal { idx: I64Operand, size: I64Operand },
 }
 
 #[cfg_attr(test, derive(PartialEq, Debug))]
@@ -291,9 +293,15 @@ pub enum Statement {
     Break,
     Continue,
     FfMReturn { dst: I64Operand, src: I64Operand, size: I64Operand },
+    FfReturn { value: FfExpr },
     FfMCall {
         name: String,
         args: Vec<CallArgument>,
+    },
+    SetCmpInputCnt {
+        cmp_idx: I64Operand,
+        sig_idx: I64Operand,
+        value: FfExpr
     },
     SetCmpInputCntCheck {
         cmp_idx: I64Operand,
@@ -343,12 +351,19 @@ pub enum FfExpr {
     FfShr(Box<FfExpr>, Box<FfExpr>),
     Shl(Box<FfExpr>, Box<FfExpr>),
     FfBand(Box<FfExpr>, Box<FfExpr>),
+    Bxor(Box<FfExpr>, Box<FfExpr>),
+    Bor(Box<FfExpr>, Box<FfExpr>),
     Lt(Box<FfExpr>, Box<FfExpr>),
     Gt(Box<FfExpr>, Box<FfExpr>),
+    Ge(Box<FfExpr>, Box<FfExpr>),
     Variable(String),
     Literal(BigUint),
     Load(I64Operand),
     Rem(Box<FfExpr>, Box<FfExpr>),
+    Call {
+        name: String,
+        args: Vec<CallArgument>,
+    },
 }
 
 // See I64Operand comment above for why Clone is always derived

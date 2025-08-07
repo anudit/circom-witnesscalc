@@ -134,6 +134,11 @@ pub enum OpCode {
     // Result pushed to stack_ff
     OpBand               = 36,
     OpRem                = 37,
+    // Logical AND operation for field elements
+    // stack_ff:0 contains right operand
+    // stack_ff:-1 contains left operand
+    // Result pushed to stack_ff (1 if both operands non-zero, 0 otherwise)
+    OpAnd                = 48,
     // Get template ID of a component
     // stack_i64:0 contains the component index
     // Result pushed to stack_i64 (template_id of the component)
@@ -176,6 +181,11 @@ pub enum OpCode {
     // stack_i64:0 contains the signal index
     // stack_i64:-1 contains the component index
     StoreCmpInputCnt     = 47,
+    // Integer division in field arithmetic (ff.idiv)
+    // stack_ff:0 contains divisor
+    // stack_ff:-1 contains dividend
+    // Result pushed to stack_ff
+    OpIdiv               = 49,
 }
 
 pub struct Component {
@@ -833,6 +843,9 @@ where
         OpCode::OpDiv => {
             output.push_str("OpDiv");
         }
+        OpCode::OpIdiv => {
+            output.push_str("OpIdiv");
+        }
         OpCode::OpSub => {
             output.push_str("OpSub");
         }
@@ -1022,6 +1035,9 @@ where
         }
         OpCode::OpBand => {
             output.push_str("OpBand");
+        }
+        OpCode::OpAnd => {
+            output.push_str("OpAnd");
         }
         OpCode::GetTemplateId => {
             output.push_str("GetTemplateId");
@@ -1464,6 +1480,11 @@ where
                 let rhs = vm.pop_ff()?;
                 vm.push_ff(ff.div(lhs, rhs));
             }
+            OpCode::OpIdiv => {
+                let lhs = vm.pop_ff()?;
+                let rhs = vm.pop_ff()?;
+                vm.push_ff(ff.idiv(lhs, rhs));
+            }
             OpCode::OpSub => {
                 let lhs = vm.pop_ff()?;
                 let rhs = vm.pop_ff()?;
@@ -1732,6 +1753,11 @@ where
                 let lhs = vm.pop_ff()?;
                 let rhs = vm.pop_ff()?;
                 vm.push_ff(ff.band(lhs, rhs));
+            }
+            OpCode::OpAnd => {
+                let lhs = vm.pop_ff()?;
+                let rhs = vm.pop_ff()?;
+                vm.push_ff(ff.land(lhs, rhs));
             }
             OpCode::OpBxor => {
                 let lhs = vm.pop_ff()?;

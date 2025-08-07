@@ -612,6 +612,8 @@ fn parse_ff_expression(input: &mut &str) -> ModalResult<FfExpr> {
                 .map(|(op1, op2)| FfExpr::FfNeq(Box::new(op1), Box::new(op2))),
             "ff.div" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
                 .map(|(op1, op2)| FfExpr::FfDiv(Box::new(op1), Box::new(op2))),
+            "ff.idiv" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
+                .map(|(op1, op2)| FfExpr::Idiv(Box::new(op1), Box::new(op2))),
             "ff.sub" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
                 .map(|(op1, op2)| FfExpr::FfSub(Box::new(op1), Box::new(op2))),
             "ff.eq" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
@@ -631,6 +633,8 @@ fn parse_ff_expression(input: &mut &str) -> ModalResult<FfExpr> {
                 .map(|(op1, op2)| FfExpr::Shl(Box::new(op1), Box::new(op2))),
             "ff.band" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
                 .map(|(op1, op2)| FfExpr::FfBand(Box::new(op1), Box::new(op2))),
+            "ff.and" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
+                .map(|(op1, op2)| FfExpr::And(Box::new(op1), Box::new(op2))),
             "ff.bxor" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
                 .map(|(op1, op2)| FfExpr::Bxor(Box::new(op1), Box::new(op2))),
             "ff.bor" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))

@@ -160,7 +160,6 @@ fn main() {
         }
     };
 
-    println!("number of templates: {}", program.templates.len());
     let bn254 = BigUint::from_str_radix("21888242871839275222246405745257275088548364400416034343698204186575808495617", 10).unwrap();
     if program.prime == bn254 {
         let ff = Field::new(bn254_prime);
@@ -1106,6 +1105,11 @@ where
             ff_expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpDiv as u8);
         },
+        FfExpr::Idiv(lhs, rhs) => {
+            ff_expression(ctx, ff, rhs)?;
+            ff_expression(ctx, ff, lhs)?;
+            ctx.code.push(OpCode::OpIdiv as u8);
+        },
         FfExpr::FfSub(lhs, rhs) => {
             ff_expression(ctx, ff, rhs)?;
             ff_expression(ctx, ff, lhs)?;
@@ -1163,6 +1167,11 @@ where
             ff_expression(ctx, ff, rhs)?;
             ff_expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpBand as u8);
+        },
+        FfExpr::And(lhs, rhs) => {
+            ff_expression(ctx, ff, rhs)?;
+            ff_expression(ctx, ff, lhs)?;
+            ctx.code.push(OpCode::OpAnd as u8);
         },
         FfExpr::Bxor(lhs, rhs) => {
             ff_expression(ctx, ff, rhs)?;
@@ -1673,7 +1682,7 @@ mod tests {
     use num_traits::One;
     use circom_witnesscalc::ast::{FfExpr, I64Operand, Signal, Statement, I64Expr, Expr};
     use circom_witnesscalc::vm2::disassemble_instruction_to_string;
-    use circom_witnesscalc::field::{bn254_prime, Field};
+    use circom_witnesscalc::field::{bn254_prime, Field, U254};
     use super::*;
 
     #[test]

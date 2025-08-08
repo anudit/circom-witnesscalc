@@ -186,6 +186,11 @@ pub enum OpCode {
     // stack_ff:-1 contains dividend
     // Result pushed to stack_ff
     OpIdiv               = 49,
+    // Field less-than-or-equal comparison (ff.le)
+    // stack_ff:0 contains right operand
+    // stack_ff:-1 contains left operand
+    // Result pushed to stack_ff (1 if lhs <= rhs, 0 otherwise)
+    OpLe                 = 50,
 }
 
 pub struct Component {
@@ -1018,6 +1023,9 @@ where
         OpCode::OpLt => {
             output.push_str("OpLt");
         }
+        OpCode::OpLe => {
+            output.push_str("OpLe");
+        }
         OpCode::OpGt => {
             output.push_str("OpGt");
         }
@@ -1690,6 +1698,12 @@ where
                 {
                     println!("OpLt: {} < {} = {}", lhs, rhs, result);
                 }
+                vm.push_ff(result);
+            }
+            OpCode::OpLe => {
+                let lhs = vm.pop_ff()?;
+                let rhs = vm.pop_ff()?;
+                let result = ff.lte(lhs, rhs);
                 vm.push_ff(result);
             }
             OpCode::OpGt => {

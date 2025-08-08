@@ -14,6 +14,7 @@ use circom_witnesscalc::field::{bn254_prime, Field, FieldOperations, FieldOps};
 #[cfg(feature = "debug_vm2")]
 use circom_witnesscalc::field::U254;
 use circom_witnesscalc::parser::parse;
+use circom_witnesscalc::storage::serialize_witnesscalc_vm2;
 use circom_witnesscalc::vm2::{execute, Circuit, Component, OpCode, InputInfo,};
 #[cfg(feature = "debug_vm2")]
 use circom_witnesscalc::vm2::{Template, Function};
@@ -174,6 +175,10 @@ fn main() {
                 disassemble::<U254>(&TF::F(f))
             }
         }
+        let mut buf: Vec<u8> = Vec::new();
+        serialize_witnesscalc_vm2(&mut buf, &circuit).unwrap();
+        println!("File length: {}", buf.len());
+
         if args.want_wtns.is_some() {
             calculate_witness(&circuit, args.want_wtns.unwrap()).unwrap();
         }
@@ -1142,6 +1147,11 @@ where
             ff_expression(ctx, ff, rhs)?;
             ff_expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpLt as u8);
+        },
+        FfExpr::Le(lhs, rhs) => {
+            ff_expression(ctx, ff, rhs)?;
+            ff_expression(ctx, ff, lhs)?;
+            ctx.code.push(OpCode::OpLe as u8);
         },
         FfExpr::Gt(lhs, rhs) => {
             ff_expression(ctx, ff, rhs)?;

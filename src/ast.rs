@@ -356,6 +356,7 @@ pub enum FfExpr {
     Bxor(Box<FfExpr>, Box<FfExpr>),
     Bor(Box<FfExpr>, Box<FfExpr>),
     Lt(Box<FfExpr>, Box<FfExpr>),
+    Le(Box<FfExpr>, Box<FfExpr>),
     Gt(Box<FfExpr>, Box<FfExpr>),
     Ge(Box<FfExpr>, Box<FfExpr>),
     Variable(String),

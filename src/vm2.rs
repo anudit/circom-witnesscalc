@@ -191,6 +191,12 @@ pub enum OpCode {
     // stack_ff:-1 contains left operand
     // Result pushed to stack_ff (1 if lhs <= rhs, 0 otherwise)
     OpLe                 = 50,
+    // Gets the length of a specific dimension of a signal in a template
+    // stack_i64:0 contains template_id
+    // stack_i64:-1 contains signal_id
+    // stack_i64:-2 contains dimension_index
+    // Result pushed to stack_i64 (length of the dimension)
+    GetTemplateSignalDimension = 51,
 }
 
 pub struct Component {
@@ -327,6 +333,8 @@ pub enum RuntimeError {
     InvalidTemplateId(usize),
     #[error("Signal ID {0} is out of bounds (max {1})")]
     SignalIdOutOfBounds(usize, usize),
+    #[error("Dimension index {0} is out of bounds (signal has {1} dimensions)")]
+    DimensionIndexOutOfBounds(usize, usize),
 }
 
 #[derive(Debug, Clone)]
@@ -1056,6 +1064,9 @@ where
         OpCode::GetTemplateSignalSize => {
             output.push_str("GetTemplateSignalSize");
         }
+        OpCode::GetTemplateSignalDimension => {
+            output.push_str("GetTemplateSignalDimension");
+        }
         OpCode::OpShl => {
             output.push_str("OpShl");
         }
@@ -1259,6 +1270,14 @@ where
                     Some(v) => v,
                     None => return Err(Box::new(RuntimeError::StackVariableIsNotSet)),
                 };
+                #[cfg(feature = "debug_vm2")]
+                {
+                    let var_name = i64_variable_names
+                        .get(&var_idx)
+                        .map(|s| format!(" ({})", s))
+                        .unwrap_or_default();
+                    println!("LoadVariableI64: {}{} = {}", var_idx, var_name, var);
+                }
                 vm.push_i64(*var);
             }
             OpCode::LoadVariableFf => {
@@ -1850,6 +1869,41 @@ where
                 };
                 
                 vm.push_i64(size as i64);
+            }
+            OpCode::GetTemplateSignalDimension => {
+                let template_id = vm.pop_usize()?;
+                let signal_id = vm.pop_usize()?;
+                let dimension_index = vm.pop_usize()?;
+
+                if template_id >= circuit.templates.len() {
+                    return Err(Box::new(RuntimeError::InvalidTemplateId(template_id)));
+                }
+                let template = &circuit.templates[template_id];
+                
+                let num_outputs = template.outputs.len();
+                let num_inputs = template.inputs.len();
+                let total_io_signals = num_outputs + num_inputs;
+                
+                if signal_id >= total_io_signals {
+                    return Err(Box::new(RuntimeError::SignalIdOutOfBounds(signal_id, total_io_signals)));
+                }
+                
+                let signal = if signal_id < num_outputs {
+                    &template.outputs[signal_id]
+                } else {
+                    &template.inputs[signal_id - num_outputs]
+                };
+                
+                let dims = match signal {
+                    Signal::Ff(dims) => dims,
+                    Signal::Bus(_, dims) => dims,
+                };
+                
+                if dimension_index >= dims.len() {
+                    return Err(Box::new(RuntimeError::DimensionIndexOutOfBounds(dimension_index, dims.len())));
+                }
+                
+                vm.push_i64(dims[dimension_index] as i64);
             }
         }
     }

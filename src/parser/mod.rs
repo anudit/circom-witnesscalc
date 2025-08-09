@@ -695,6 +695,13 @@ fn parse_i64_expression(input: &mut &str) -> ModalResult<I64Expr> {
                     preceded(space1, parse_i64_operand),
                 )
                 .map(|(template_id, signal_id)| I64Expr::GetTemplateSignalSize(template_id, signal_id)),
+            "get_template_signal_dimension" => (
+                    preceded(space1, parse_i64_operand),
+                    preceded(space1, parse_i64_operand),
+                    preceded(space1, parse_i64_operand),
+                )
+                .map(|(template_id, signal_id, dimension_index)| 
+                    I64Expr::GetTemplateSignalDimension(template_id, signal_id, dimension_index)),
             _ => fail::<_, I64Expr, _>,
         },
         // Try to parse as a literal
@@ -1956,6 +1963,16 @@ x";
         let want = I64Expr::GetTemplateSignalSize(
             I64Operand::Variable("x_3244".to_string()),
             I64Operand::Literal(1)
+        );
+        let i64_expr = consume_parse_result(parse_i64_expression.parse(input));
+        assert_eq!(want, i64_expr);
+        
+        // test get_template_signal_dimension expression
+        let input = "get_template_signal_dimension x_2482 i64.1 i64.2";
+        let want = I64Expr::GetTemplateSignalDimension(
+            I64Operand::Variable("x_2482".to_string()),
+            I64Operand::Literal(1),
+            I64Operand::Literal(2)
         );
         let i64_expr = consume_parse_result(parse_i64_expression.parse(input));
         assert_eq!(want, i64_expr);

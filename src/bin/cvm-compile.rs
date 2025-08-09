@@ -1070,6 +1070,12 @@ where
             operand_i64(ctx, template_id);
             ctx.code.push(OpCode::GetTemplateSignalSize as u8);
         }
+        I64Expr::GetTemplateSignalDimension(template_id, signal_id, dimension_index) => {
+            operand_i64(ctx, dimension_index);
+            operand_i64(ctx, signal_id);
+            operand_i64(ctx, template_id);
+            ctx.code.push(OpCode::GetTemplateSignalDimension as u8);
+        }
     }
     Ok(())
 }

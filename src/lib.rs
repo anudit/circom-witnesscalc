@@ -7,6 +7,7 @@ pub mod graph;
 pub mod storage;
 pub mod vm;
 pub mod vm2;
+mod vm2_setup;
 pub mod ast;
 
 pub mod parser;
@@ -22,8 +23,11 @@ use wtns_file::FieldElement;
 use ark_bn254::Fr;
 use ark_ff::{BigInteger, PrimeField};
 use indicatif::{ProgressBar, ProgressStyle};
-use crate::field::{Field, FieldOperations, FieldOps, U254, U64};
+use crate::field::{bn254_prime, Field, FieldOperations, FieldOps, U254, U64};
 use crate::storage::proto_deserializer::deserialize_witnesscalc_graph_from_bytes;
+use crate::storage::{deserialize_witnesscalc_vm2_body, read_witnesscalc_vm2_header};
+use crate::vm2::{execute, Circuit};
+use crate::vm2_setup::{init_signals, build_component_tree};
 
 pub type InputSignalsInfo = HashMap<String, (usize, usize)>;
 
@@ -403,6 +407,91 @@ pub fn progress_bar(n: usize) -> ProgressBar {
             .progress_chars("#>-")
     );
     pb
+}
+
+pub fn calc_witness_vm2_buf(compiled_bytecode: &[u8], inputs_json: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let mut reader = std::io::Cursor::new(&compiled_bytecode);
+    let prime = read_witnesscalc_vm2_header(&mut reader).unwrap();
+    if prime == num_bigint::BigUint::from_bytes_le(&bn254_prime.to_le_bytes_vec()) {
+        let ff = Field::new(bn254_prime);
+        let circuit = deserialize_witnesscalc_vm2_body(&mut reader, ff).unwrap();
+        let mut witness_buf: Vec<u8> = Vec::new();
+        calculate_witness_vm2(&circuit, inputs_json, &mut witness_buf)?;
+        Ok(witness_buf)
+    } else {
+        Err("ERROR: Unsupported prime field".into())
+    }
+}
+
+fn calculate_witness_vm2<T: FieldOps>(
+    circuit: &Circuit<T>, inputs_json: impl std::io::Read,
+    mut w: impl std::io::Write) -> Result<(), Box<dyn std::error::Error>> {
+
+    let mut signals = init_signals(
+        inputs_json, circuit.signals_num, &circuit.field,
+        &circuit.types, &circuit.input_infos)?;
+
+    let mut component_tree = build_component_tree(
+        circuit.main_template_id, &circuit.templates);
+
+    #[cfg(feature = "debug_vm2")]
+    vm2_setup::debug_component_tree(&component_tree, &circuit.templates);
+
+    let start = std::time::Instant::now();
+    execute(circuit, &mut signals, &circuit.field, &mut component_tree)?;
+    println!("VM2 executed in {:?}", start.elapsed());
+
+    let wtns_data = witness(
+        &signals, &circuit.witness, circuit.field.prime)?;
+
+    w.write_all(&wtns_data)?;
+    w.flush()?;
+
+    Ok(())
+}
+
+fn witness<T: FieldOps>(
+    signals: &[Option<T>], witness_signals: &[usize],
+    prime: T) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+
+    let mut result = Vec::with_capacity(witness_signals.len());
+
+    for &idx in witness_signals {
+        if idx >= signals.len() {
+            return Err("witness signal index out of bounds".into());
+        }
+
+        match signals[idx] {
+            Some(s) => result.push(s),
+            None => return Err(format!("witness signal isnot set: {}", idx).into()),
+        }
+    }
+
+    match T::BYTES {
+        8 => {
+            let vec_witness: Vec<FieldElement<8>> = result
+                .iter()
+                .map(|a| {
+                    let a: [u8; 8] = a.to_le_bytes().try_into().unwrap();
+                    a.into()
+                })
+                .collect();
+            Ok(wtns_from_witness2(vec_witness, prime))
+        }
+        32 => {
+            let vec_witness: Vec<FieldElement<32>> = result
+                .iter()
+                .map(|a| {
+                    let a: [u8; 32] = a.to_le_bytes().try_into().unwrap();
+                    a.into()
+                })
+                .collect();
+            Ok(wtns_from_witness2(vec_witness, prime))
+        }
+        _ => {
+            todo!()
+        }
+    }
 }
 
 #[cfg(test)]

@@ -1,0 +1,74 @@
+use std::{env, fs};
+use std::time::Instant;
+use circom_witnesscalc::calc_witness_vm2_buf;
+
+struct Args {
+    vm_file: String,
+    inputs_file: String,
+    witness_file: String,
+}
+
+fn parse_args() -> Args {
+    let args: Vec<String> = env::args().collect();
+    let mut wcd_file: Option<String> = None;
+    let mut inputs_file: Option<String> = None;
+    let mut wtns_file: Option<String> = None;
+
+    let usage = |err_msg: &str| {
+        if !err_msg.is_empty() {
+            eprintln!("ERROR:");
+            eprintln!("    {}", err_msg);
+            eprintln!();
+        }
+        eprintln!("USAGE:");
+        eprintln!("    {} <wcd_file> <input_json> <output_path> [OPTIONS]", args[0]);
+        eprintln!();
+        eprintln!("ARGUMENTS:");
+        eprintln!("    <wcd_file>    Path to the WCD file with compiled bytecode");
+        eprintln!("    <input_json>  JSON file containing inputs for the circuit");
+        eprintln!("    <output_path> File where the witness will be saved");
+        eprintln!();
+        eprintln!("OPTIONS:");
+        eprintln!("    -h | --help                Display this help message");
+        let exit_code = if !err_msg.is_empty() { 1i32 } else { 0i32 };
+        std::process::exit(exit_code);
+    };
+
+    let mut i = 1;
+    while i < args.len() {
+        if args[i] == "--help" || args[i] == "-h" {
+            usage("");
+        } else if args[i].starts_with("-") {
+            usage(format!("Unknown option: {}", args[i]).as_str());
+        } else if wcd_file.is_none() {
+            wcd_file = Some(args[i].clone());
+        } else if inputs_file.is_none() {
+            inputs_file = Some(args[i].clone());
+        } else if wtns_file.is_none() {
+            wtns_file = Some(args[i].clone());
+        } else {
+            usage(format!("Unknown argument: {}", args[i]).as_str());
+        }
+        i += 1;
+    }
+
+    Args {
+        vm_file: wcd_file.unwrap_or_else(|| { usage("missing WCD file"); String::new() }),
+        inputs_file: inputs_file.unwrap_or_else(|| { usage("missing inputs file"); String::new() }),
+        witness_file: wtns_file.unwrap_or_else(|| { usage("missing output .wtns file"); String::new() }),
+    }
+}
+
+fn main() {
+    let args = parse_args();
+
+    let compiled_bytecode = fs::read(&args.vm_file).expect("Failed to read bytecode file");
+    let inputs_json = fs::read(&args.inputs_file).expect("Failed to read input file");
+
+    let start = Instant::now();
+    let witness_data = calc_witness_vm2_buf(&compiled_bytecode, &inputs_json).unwrap();
+    println!("Witness calculated in {:?}", start.elapsed());
+
+    fs::write(&args.witness_file, &witness_data).expect("Failed to write witness file");
+    println!("Witness saved to {}", &args.witness_file);
+}

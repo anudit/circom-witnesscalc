@@ -1,35 +1,24 @@
 use std::{env, fs, process};
 use std::collections::HashMap;
 use std::error::Error;
-use std::fs::File;
-use std::io::{Write};
-use std::path::Path;
-use std::time::Instant;
 use num_bigint::BigUint;
 use num_traits::{Num, ToBytes};
-use wtns_file::FieldElement;
-use circom_witnesscalc::{ast, vm2, wtns_from_witness2};
+use circom_witnesscalc::{ast, vm2};
 use circom_witnesscalc::ast::{Expr, FfExpr, I64Expr, I64Operand, Statement};
 use circom_witnesscalc::field::{bn254_prime, Field, FieldOperations, FieldOps};
 #[cfg(feature = "debug_vm2")]
 use circom_witnesscalc::field::U254;
 use circom_witnesscalc::parser::parse;
 use circom_witnesscalc::storage::serialize_witnesscalc_vm2;
-use circom_witnesscalc::vm2::{execute, Circuit, Component, OpCode, InputInfo,};
+use circom_witnesscalc::vm2::{Circuit, OpCode, InputInfo};
 #[cfg(feature = "debug_vm2")]
 use circom_witnesscalc::vm2::{Template, Function};
 #[cfg(feature = "debug_vm2")]
 use circom_witnesscalc::vm2::disassemble_instruction;
 
-struct WantWtns {
-    wtns_file: String,
-    inputs_file: String,
-}
-
 struct Args {
     cvm_file: String,
     output_file: String,
-    want_wtns: Option<WantWtns>,
     sym_file: String,
 }
 
@@ -37,10 +26,6 @@ struct Args {
 enum CompilationError {
     #[error("Main template ID is not found")]
     MainTemplateIDNotFound,
-    #[error("witness signal index is out of bounds")]
-    WitnessSignalIndexOutOfBounds,
-    #[error("witness signal is not set: {0}")]
-    WitnessSignalNotSet(usize),
     #[error("incorrect SYM file format: `{0}`")]
     IncorrectSymFileFormat(String),
     #[error("jump offset is too large")]
@@ -55,12 +40,6 @@ enum CompilationError {
     SignalPrefixMismatch(String, String),
     #[error("Invalid array index in signal name '{0}': expected [0] but found '{1}'")]
     InvalidArrayIndex(String, String),
-}
-
-#[derive(Debug, thiserror::Error)]
-enum RuntimeError {
-    #[error("incorrect inputs json file: `{0}`")]
-    InvalidSignalsJson(String)
 }
 
 fn parse_args() -> Args {
@@ -128,23 +107,9 @@ fn parse_args() -> Args {
         i += 1;
     }
 
-    let want_wtns: Option<WantWtns> = match (inputs_file, wtns_file) {
-        (Some(inputs_file), Some(wtns_file)) => {
-            Some(WantWtns{ wtns_file, inputs_file })
-        }
-        (None, None) => None,
-        (Some(_), None) => {
-            usage("inputs file is provided, but witness file is not");
-        }
-        (None, Some(_)) => {
-            usage("witness file is provided, but inputs file is not");
-        }
-    };
-
     Args {
         cvm_file: cvm_file.unwrap_or_else(|| { usage("missing CVM file") }),
         output_file: output_file.unwrap_or_else(|| { usage("missing output file") }),
-        want_wtns,
         sym_file: sym_file.unwrap_or_else(|| { usage("missing SYM file") }),
     }
 }
@@ -161,6 +126,8 @@ fn main() {
         }
     };
 
+    let mut buf: Vec<u8> = Vec::new();
+
     let bn254 = BigUint::from_str_radix("21888242871839275222246405745257275088548364400416034343698204186575808495617", 10).unwrap();
     if program.prime == bn254 {
         let ff = Field::new(bn254_prime);
@@ -175,205 +142,16 @@ fn main() {
                 disassemble::<U254>(&TF::F(f))
             }
         }
-        let mut buf: Vec<u8> = Vec::new();
-        serialize_witnesscalc_vm2(&mut buf, &circuit).unwrap();
-        println!("File length: {}", buf.len());
 
-        if args.want_wtns.is_some() {
-            calculate_witness(&circuit, args.want_wtns.unwrap()).unwrap();
-        }
+        serialize_witnesscalc_vm2(&mut buf, &circuit).unwrap();
     } else {
         eprintln!("ERROR: Unsupported prime field");
         std::process::exit(1);
     }
 
-    println!(
-        "OK, output is supposed to be saved in {}, but it is not implemented yet.",
-        args.output_file);
+    fs::write(&args.output_file, &buf).unwrap();
+    println!("Bytecode saved into {}", args.output_file);
 }
-
-/// Create a component tree and returns the component and the number of signals
-/// of self and all its children
-fn create_component(
-    template_id: usize,
-    signals_start: usize, vm_templates: &[vm2::Template]) -> (Component, usize) {
-
-    let t = &vm_templates[template_id];
-    let mut next_signal_start = signals_start + t.signals_num;
-    let mut components = Vec::with_capacity(t.components.len());
-    for cmp_tmpl_id in t.components.iter() {
-        components.push(match cmp_tmpl_id {
-            None => None,
-            Some( tmpl_id ) => {
-                let (c, signals_num) = create_component(
-                    *tmpl_id, next_signal_start, vm_templates);
-                next_signal_start += signals_num;
-                Some(Box::new(c))
-            }
-        });
-    }
-    (
-        Component {
-            signals_start,
-            template_id,
-            components,
-            number_of_inputs: t.number_of_inputs,
-        },
-        next_signal_start - signals_start
-    )
-}
-
-fn build_component_tree(
-    main_template_id: usize, vm_templates: &[vm2::Template]) -> Component {
-
-    create_component(main_template_id, 1, vm_templates).0
-}
-
-/// Print component tree for debugging
-#[cfg(feature = "debug_vm2")]
-fn print_component_tree(component: &Component, templates: &[Template], indent: usize) {
-    let indent_str = "  ".repeat(indent);
-    let template_name = &templates[component.template_id].name;
-
-    println!("Component: {} (signals_start: {}, inputs: {})",
-        template_name, component.signals_start, component.number_of_inputs);
-    
-    if !component.components.is_empty() {
-        println!("{}  subcomponents:", indent_str);
-        for (i, sub_component) in component.components.iter().enumerate() {
-            match sub_component {
-                Some(sub) => {
-                    print!("{}  [{}]: ", indent_str, i);
-                    print_component_tree(sub, templates, indent + 2);
-                }
-                None => {
-                    println!("{}  [{}]: -", indent_str, i);
-                }
-            }
-        }
-    }
-}
-
-/// Debug helper to print the entire component tree
-#[cfg(feature = "debug_vm2")]
-fn debug_component_tree(component: &Component, templates: &[Template]) {
-    println!("\n=== Component Tree ===");
-    print_component_tree(component, templates, 0);
-    println!("===================\n");
-}
-
-fn calculate_witness<T: FieldOps>(
-    circuit: &Circuit<T>, want_wtns: WantWtns) -> Result<(), Box<dyn Error>> {
-
-    let start = Instant::now();
-
-    let mut signals = init_signals(
-        &want_wtns.inputs_file, circuit.signals_num, &circuit.field,
-        &circuit.types, &circuit.input_infos)?;
-
-    let mut component_tree = build_component_tree(
-        circuit.main_template_id, &circuit.templates);
-
-    #[cfg(feature = "debug_vm2")]
-    debug_component_tree(&component_tree, &circuit.templates);
-
-    execute(circuit, &mut signals, &circuit.field, &mut component_tree)?;
-
-    let wtns_data = witness(
-        &signals, &circuit.witness, circuit.field.prime)?;
-    let mut file = File::create(Path::new(&want_wtns.wtns_file))?;
-    file.write_all(&wtns_data)?;
-    file.flush()?;
-
-    println!(
-        "Witness saved to {}, calculated in {:?}", want_wtns.wtns_file,
-        start.elapsed());
-    Ok(())
-}
-
-fn parse_signals_json<T: FieldOps, F>(
-    inputs_data: &[u8], ff: &F) -> Result<HashMap<String, T>, Box<dyn Error>>
-where
-    for <'a> &'a F: FieldOperations<Type = T> {
-
-    let v: serde_json::Value = serde_json::from_slice(inputs_data)?;
-    let mut records: HashMap<String, T> = HashMap::new();
-    visit_inputs_json("", &v, &mut records, ff)?;
-    Ok(records)
-}
-
-fn visit_inputs_json<T: FieldOps, F>(
-    prefix: &str, v: &serde_json::Value, records: &mut HashMap<String, T>,
-    ff: &F) -> Result<(), Box<dyn Error>>
-where
-    for <'a> &'a F: FieldOperations<Type = T> {
-
-    match v {
-        serde_json::Value::Null => return Err(Box::new(
-            RuntimeError::InvalidSignalsJson(
-                format!("unexpected null value at path {}", prefix)))),
-        serde_json::Value::Bool(b) => {
-            let b = if *b { T::one() } else { T::zero() };
-            if prefix.is_empty() {
-                return Err(Box::new(
-                    RuntimeError::InvalidSignalsJson(
-                        "boolean value cannot be at the root".to_string())));
-            }
-            records.insert(prefix.to_string(), b);
-        },
-        serde_json::Value::Number(n) => {
-            let v = if n.is_u64() {
-                let n = n.as_u64().unwrap();
-                ff.parse_le_bytes(n.to_le_bytes().as_slice())?
-            } else if n.is_i64() {
-                let n = n.as_i64().unwrap();
-                ff.parse_str(&n.to_string())?
-            } else {
-                return Err(Box::new(RuntimeError::InvalidSignalsJson(
-                    format!("invalid number at path {}: {}", prefix, n))));
-            };
-            if prefix.is_empty() {
-                return Err(Box::new(
-                    RuntimeError::InvalidSignalsJson(
-                        "number value cannot be at the root".to_string())));
-            }
-            records.insert(prefix.to_string(), v);
-        },
-        serde_json::Value::String(s) => {
-            if prefix.is_empty() {
-                return Err(Box::new(
-                    RuntimeError::InvalidSignalsJson(
-                        "string value cannot be at the root".to_string())));
-            }
-            records.insert(prefix.to_string(), ff.parse_str(s)?);
-        },
-        serde_json::Value::Array(vs) => {
-            if prefix.is_empty() {
-                return Err(Box::new(
-                    RuntimeError::InvalidSignalsJson(
-                        "array value cannot be at the root".to_string())));
-            }
-            for (i, v) in vs.iter().enumerate() {
-                let new_prefix = format!("{}[{}]", prefix, i);
-                visit_inputs_json(&new_prefix, v, records, ff)?;
-            }
-        },
-        serde_json::Value::Object(o) => {
-            for (k, v) in o.iter() {
-                let new_prefix = if prefix.is_empty() {
-                    k.to_string()
-                } else {
-                    format!("{}.{}", prefix, k)
-                };
-                visit_inputs_json(&new_prefix, v, records, ff)?;
-            }
-        },
-    };
-
-    Ok(())
-}
-
-
 
 #[derive(Debug)]
 struct SymEntry {
@@ -559,257 +337,6 @@ fn calculate_bus_size(bus_type: &ast::Type, _all_types: &[ast::Type]) -> usize {
     }
 
     total_size
-}
-
-/// Expand an InputInfo into all its constituent signal paths with their indices
-fn expand_input_info_to_signal_paths(
-    input_info: &InputInfo,
-    types: &[vm2::Type]
-) -> Result<Vec<(String, usize)>, Box<dyn Error>> {
-    let mut paths = Vec::new();
-    let mut current_offset = input_info.offset;
-
-    if let Some(type_id) = &input_info.type_id {
-        // This is a bus type - expand it recursively
-        let bus_type = types.iter().find(|t| t.name == *type_id)
-            .ok_or_else(|| Box::new(CompilationError::BusTypeNotFound(type_id.clone())))?;
-
-        if input_info.lengths.is_empty() {
-            // Single bus instance
-            expand_bus_type(&input_info.name, bus_type, types, &mut current_offset, &mut paths)?;
-        } else {
-            // Array of bus instances
-            let total_elements: usize = input_info.lengths.iter().product();
-            for i in 0..total_elements {
-                let array_path = format!("{}[{}]", input_info.name, i);
-                expand_bus_type(&array_path, bus_type, types, &mut current_offset, &mut paths)?;
-            }
-        }
-    } else {
-        // This is a field (ff) type
-        if input_info.lengths.is_empty() {
-            // Single field
-            paths.push((input_info.name.clone(), current_offset));
-        } else {
-            // Array of fields - generate multi-dimensional paths
-            let total_elements: usize = input_info.lengths.iter().product();
-            for i in 0..total_elements {
-                let multi_indices = flat_to_multidim_indices(i, &input_info.lengths);
-                let mut array_path = input_info.name.clone();
-                for idx in multi_indices {
-                    array_path.push_str(&format!("[{}]", idx));
-                }
-                paths.push((array_path, current_offset));
-                current_offset += 1;
-            }
-        }
-    }
-
-    Ok(paths)
-}
-
-/// Recursively expand a bus type into individual field paths
-fn expand_bus_type(
-    base_path: &str,
-    bus_type: &vm2::Type,
-    types: &[vm2::Type],
-    current_offset: &mut usize,
-    paths: &mut Vec<(String, usize)>
-) -> Result<(), Box<dyn Error>> {
-    for field in &bus_type.fields {
-        let field_path = format!("{}.{}", base_path, field.name);
-
-        match &field.kind {
-            vm2::TypeFieldKind::Bus(bus_type_index) => {
-                let field_type = types.get(*bus_type_index)
-                    .ok_or_else(|| Box::new(CompilationError::BusTypeNotFound(format!("Bus type index {}", bus_type_index))))?;
-
-                if field.dims.is_empty() {
-                    // Single bus instance
-                    expand_bus_type(&field_path, field_type, types, current_offset, paths)?;
-                } else {
-                    // Array of bus instances
-                    let total_elements: usize = field.dims.iter().product();
-                    for i in 0..total_elements {
-                        let array_path = format!("{}[{}]", field_path, i);
-                        expand_bus_type(&array_path, field_type, types, current_offset, paths)?;
-                    }
-                }
-            },
-            vm2::TypeFieldKind::Ff => {
-                // This field is a primitive type (ff)
-                if field.dims.is_empty() {
-                    // Single field
-                    paths.push((field_path, *current_offset));
-                    *current_offset += 1;
-                } else {
-                    // Array of fields
-                    let total_elements: usize = field.dims.iter().product();
-                    for i in 0..total_elements {
-                        let array_path = format!("{}[{}]", field_path, i);
-                        paths.push((array_path, *current_offset));
-                        *current_offset += 1;
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Convert flat array index to multi-dimensional indices
-fn flat_to_multidim_indices(flat_idx: usize, dimensions: &[usize]) -> Vec<usize> {
-    let mut indices = Vec::new();
-    let mut remaining = flat_idx;
-
-    for &dim in dimensions.iter().rev() {
-        indices.push(remaining % dim);
-        remaining /= dim;
-    }
-
-    indices.reverse();
-    indices
-}
-
-/// Check if a path represents a flat array access and convert to multi-dimensional path
-fn try_convert_flat_to_multidim_path(
-    path: &str,
-    input_infos: &[InputInfo]
-) -> Option<String> {
-    // Extract base name and flat index from path like "b[4]"
-    if let Some(bracket_start) = path.find('[') {
-        let base_name = &path[..bracket_start];
-        let bracket_part = &path[bracket_start..];
-
-        // Parse flat index from "[4]"
-        if let Some(flat_idx_str) = bracket_part.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
-            if let Ok(flat_idx) = flat_idx_str.parse::<usize>() {
-                // Find matching input info
-                for input_info in input_infos {
-                    if input_info.name == base_name && input_info.lengths.len() > 1 {
-                        // Convert flat index to multi-dimensional indices
-                        let multi_indices = flat_to_multidim_indices(flat_idx, &input_info.lengths);
-
-                        // Build multi-dimensional path
-                        let mut result = base_name.to_string();
-                        for idx in multi_indices {
-                            result.push_str(&format!("[{}]", idx));
-                        }
-                        return Some(result);
-                    }
-                }
-            }
-        }
-    }
-
-    None
-}
-
-fn init_signals<T: FieldOps, F>(
-    inputs_file: &str, signals_num: usize, ff: &F, types: &[vm2::Type],
-    input_infos: &[InputInfo]) -> Result<Vec<Option<T>>, Box<dyn Error>>
-where
-    for <'a> &'a F: FieldOperations<Type = T> {
-
-    let mut signals = vec![None; signals_num];
-    signals[0] = Some(T::one());
-
-    // Expand each InputInfo into all its constituent signal paths
-    let mut signal_path_to_idx: HashMap<String, usize> = HashMap::new();
-    for input_info in input_infos {
-        let expanded_paths = expand_input_info_to_signal_paths(input_info, types)?;
-        for (path, idx) in expanded_paths {
-            signal_path_to_idx.insert(path, idx);
-        }
-    }
-
-    let inputs_data = fs::read_to_string(inputs_file)?;
-    let input_signals = parse_signals_json(inputs_data.as_bytes(), ff)?;
-
-    for (path, value) in input_signals.iter() {
-        // Try to find exact match first
-        if let Some(&signal_idx) = signal_path_to_idx.get(path) {
-            signal_path_to_idx.remove(path);
-            signals[signal_idx] = Some(*value);
-            continue;
-        }
-
-        // Try converting flat array path to multi-dimensional path
-        if let Some(multidim_path) = try_convert_flat_to_multidim_path(path, input_infos) {
-            if let Some(&signal_idx) = signal_path_to_idx.get(&multidim_path) {
-                signal_path_to_idx.remove(&multidim_path);
-                signals[signal_idx] = Some(*value);
-                continue;
-            }
-        }
-
-        // Try parsing as array access with [0] suffix for backwards compatibility
-        if path.ends_with("[0]") {
-            let base_path = path.trim_end_matches("[0]");
-            if let Some(&signal_idx) = signal_path_to_idx.get(base_path) {
-                signal_path_to_idx.remove(base_path);
-                signals[signal_idx] = Some(*value);
-                continue;
-            }
-        }
-
-        return Err(Box::new(
-            RuntimeError::InvalidSignalsJson(
-                format!("signal {} is not found in input mapping", path))));
-    }
-
-    // Check if any input signals were not provided
-    if !signal_path_to_idx.is_empty() {
-        let missing_signals: Vec<String> = signal_path_to_idx.keys().cloned().collect();
-        return Err(Box::new(
-            RuntimeError::InvalidSignalsJson(
-                format!("Missing input signals: {}", missing_signals.join(", ")))));
-    }
-
-    Ok(signals)
-}
-
-fn witness<T: FieldOps>(signals: &[Option<T>], witness_signals: &[usize], prime: T) -> Result<Vec<u8>, CompilationError> {
-    let mut result = Vec::with_capacity(witness_signals.len());
-
-    for &idx in witness_signals {
-        if idx >= signals.len() {
-            return Err(CompilationError::WitnessSignalIndexOutOfBounds)
-        }
-
-        match signals[idx] {
-            Some(s) => result.push(s),
-            None => return Err(CompilationError::WitnessSignalNotSet(idx))
-        }
-    }
-
-    match T::BYTES {
-        8 => {
-            let vec_witness: Vec<FieldElement<8>> = result
-                .iter()
-                .map(|a| {
-                    let a: [u8; 8] = a.to_le_bytes().try_into().unwrap();
-                    a.into()
-                })
-                .collect();
-            Ok(wtns_from_witness2(vec_witness, prime))
-        }
-        32 => {
-            let vec_witness: Vec<FieldElement<32>> = result
-                .iter()
-                .map(|a| {
-                    let a: [u8; 32] = a.to_le_bytes().try_into().unwrap();
-                    a.into()
-                })
-                .collect();
-            Ok(wtns_from_witness2(vec_witness, prime))
-        }
-        _ => {
-            todo!()
-        }
-    }
-
 }
 
 #[cfg(feature = "debug_vm2")]
@@ -1695,8 +1222,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use num_traits::One;
-    use circom_witnesscalc::ast::{FfExpr, I64Operand, Signal, Statement, I64Expr, Expr};
+    use circom_witnesscalc::ast::{FfExpr, I64Operand, Statement, I64Expr, Expr};
     use circom_witnesscalc::vm2::disassemble_instruction_to_string;
     use circom_witnesscalc::field::{bn254_prime, Field, U254};
     use super::*;
@@ -1704,140 +1230,6 @@ mod tests {
     #[test]
     fn test_example() {
         // Placeholder test
-    }
-
-    #[test]
-    fn test_build_component_tree() {
-        // Create leaf templates with no components
-        let template1 = ast::Template {
-            name: "Leaf1".to_string(),
-            outputs: vec![Signal::Ff(vec![1])],
-            inputs: vec![Signal::Ff(vec![1])],
-            signals_num: 3,
-            components: vec![],
-            body: vec![],
-        };
-
-        let template2 = ast::Template {
-            name: "Leaf2".to_string(),
-            outputs: vec![Signal::Ff(vec![1])],
-            inputs: vec![Signal::Ff(vec![1])],
-            signals_num: 3,
-            components: vec![],
-            body: vec![],
-        };
-
-        let template3 = ast::Template {
-            name: "Leaf3".to_string(),
-            outputs: vec![Signal::Ff(vec![1])],
-            inputs: vec![Signal::Ff(vec![1])],
-            signals_num: 3,
-            components: vec![],
-            body: vec![],
-        };
-
-        let template4 = ast::Template {
-            name: "Leaf4".to_string(),
-            outputs: vec![Signal::Ff(vec![1])],
-            inputs: vec![Signal::Ff(vec![1])],
-            signals_num: 3,
-            components: vec![],
-            body: vec![],
-        };
-
-        // Create middle-level templates, each with two children
-        // First middle template has two children
-        let template5 = ast::Template {
-            name: "Middle1".to_string(),
-            outputs: vec![Signal::Ff(vec![1])],
-            inputs: vec![Signal::Ff(vec![1])],
-            signals_num: 4,
-            components: vec![Some(0), Some(1)], // References to template1 and template2
-            body: vec![],
-        };
-
-        // Second middle template has one child and one None
-        let template6 = ast::Template {
-            name: "Middle2".to_string(),
-            outputs: vec![Signal::Ff(vec![1])],
-            inputs: vec![Signal::Ff(vec![1])],
-            signals_num: 4,
-            components: vec![Some(2), None, Some(3)], // References to template3, None, and template4
-            body: vec![],
-        };
-
-        // Create root template with two children
-        let template7 = ast::Template {
-            name: "Root".to_string(),
-            outputs: vec![Signal::Ff(vec![1])],
-            inputs: vec![Signal::Ff(vec![1])],
-            signals_num: 5,
-            components: vec![Some(4), Some(5)], // References to template5 and template6
-            body: vec![],
-        };
-
-        let ast_templates = vec![
-            template1, template2, template3, template4, template5, template6,
-            template7];
-        let ff = Field::new(bn254_prime);
-        let function_registry = HashMap::new();
-        let empty_type_map = HashMap::new();
-        let vm_templates = ast_templates.iter()
-            .map(|t| compile_template(
-                t, &ff, &function_registry, &[], &empty_type_map).unwrap())
-            .collect::<Vec<_>>();
-
-        // Build component tree with template7 (Root) as the main template
-        let component_tree = build_component_tree(6, &vm_templates);
-
-        // Verify the structure of the root component
-        assert_eq!(component_tree.signals_start, 1);
-        assert_eq!(component_tree.template_id, 6);
-        assert_eq!(component_tree.number_of_inputs, 1);
-        assert_eq!(component_tree.components.len(), 2);
-
-        // Verify the first child component (Middle1)
-        let middle1 = component_tree.components[0].as_ref().unwrap();
-        assert_eq!(middle1.signals_start, 6); // 1 (start) + 5 (signals_num of root)
-        assert_eq!(middle1.template_id, 4);
-        assert_eq!(middle1.number_of_inputs, 1);
-        assert_eq!(middle1.components.len(), 2);
-
-        // Verify the second child component (Middle2)
-        let middle2 = component_tree.components[1].as_ref().unwrap();
-        assert_eq!(middle2.signals_start, 16); // 6 (start of middle1) + 4 (signals_num of middle1) + 3 (signals_num of leaf1) + 3 (signals_num of leaf2)
-        assert_eq!(middle2.template_id, 5);
-        assert_eq!(middle2.number_of_inputs, 1);
-        assert_eq!(middle2.components.len(), 3);
-
-        // Verify Middle2 has a None component
-        assert!(middle2.components[1].is_none());
-
-        // Verify the leaf components of Middle1
-        let leaf1 = middle1.components[0].as_ref().unwrap();
-        assert_eq!(leaf1.signals_start, 10); // 6 (start of middle1) + 4 (signals_num of middle1)
-        assert_eq!(leaf1.template_id, 0);
-        assert_eq!(leaf1.number_of_inputs, 1);
-        assert_eq!(leaf1.components.len(), 0);
-
-        let leaf2 = middle1.components[1].as_ref().unwrap();
-        assert_eq!(leaf2.signals_start, 13); // 10 (start of leaf1) + 3 (signals_num of leaf1)
-        assert_eq!(leaf2.template_id, 1);
-        assert_eq!(leaf2.number_of_inputs, 1);
-        assert_eq!(leaf2.components.len(), 0);
-
-        // Verify the leaf components of Middle2
-        let leaf3 = middle2.components[0].as_ref().unwrap();
-        assert_eq!(leaf3.signals_start, 20); // 16 (start of middle2) + 4 (signals_num of middle2)
-        assert_eq!(leaf3.template_id, 2);
-        assert_eq!(leaf3.number_of_inputs, 1);
-        assert_eq!(leaf3.components.len(), 0);
-
-        let leaf4 = middle2.components[2].as_ref().unwrap();
-        assert_eq!(leaf4.signals_start, 23); // 20 (start of leaf3) + 3 (signals_num of leaf3)
-        assert_eq!(leaf4.template_id, 3);
-        assert_eq!(leaf4.number_of_inputs, 1);
-        assert_eq!(leaf4.components.len(), 0);
     }
 
     #[test]
@@ -1945,43 +1337,43 @@ mod tests {
         let ff = Field::new(bn254_prime);
         let function_registry = HashMap::new();
         let mut ctx = TemplateCompilationContext::new(&function_registry);
-        
+
         // Test 1: Variable assignment (FF to FF)
         // First, create a source FF variable
         let inst1 = assign_ff("x_src", &self::ff("42"));
         instruction(&mut ctx, &ff, &inst1).unwrap();
-        
+
         // Now test assignment from variable to variable
         let inst2 = Statement::Assignment {
             name: "x_dest".to_string(),
             value: Expr::Variable("x_src".to_string()),
         };
         instruction(&mut ctx, &ff, &inst2).unwrap();
-        
+
         // Test 2: Variable assignment (I64 to I64)
         let inst3 = assign_i64("i_src", &I64Expr::Literal(100));
         instruction(&mut ctx, &ff, &inst3).unwrap();
-        
+
         let inst4 = Statement::Assignment {
             name: "i_dest".to_string(),
             value: Expr::Variable("i_src".to_string()),
         };
         instruction(&mut ctx, &ff, &inst4).unwrap();
-        
+
         // Test 3: Direct FF expression assignment
         let inst5 = Statement::Assignment {
             name: "x_direct".to_string(),
             value: Expr::Ff(FfExpr::Literal(BigUint::from(99u32))),
         };
         instruction(&mut ctx, &ff, &inst5).unwrap();
-        
+
         // Test 4: Direct I64 expression assignment
         let inst6 = Statement::Assignment {
             name: "i_direct".to_string(),
             value: Expr::I64(I64Expr::Literal(200)),
         };
         instruction(&mut ctx, &ff, &inst6).unwrap();
-        
+
         // Verify that variable types were tracked correctly
         assert!(matches!(ctx.variable_types.get("x_src"), Some(&VariableType::Ff)));
         assert!(matches!(ctx.variable_types.get("x_dest"), Some(&VariableType::Ff)));
@@ -1989,105 +1381,6 @@ mod tests {
         assert!(matches!(ctx.variable_types.get("i_dest"), Some(&VariableType::I64)));
         assert!(matches!(ctx.variable_types.get("x_direct"), Some(&VariableType::Ff)));
         assert!(matches!(ctx.variable_types.get("i_direct"), Some(&VariableType::I64)));
-    }
-
-    #[test]
-    fn test_parse_signals_json() {
-        let ff = Field::new(bn254_prime);
-
-        // bools
-        let i = r#"
-{
-  "a": true,
-  "b": false,
-  "c": 100500
-}"#;
-        let result = parse_signals_json(i.as_bytes(), &ff).unwrap();
-        let mut want: HashMap<String, U254> = HashMap::new();
-        want.insert("a".to_string(), U254::from_str("1").unwrap());
-        want.insert("b".to_string(), U254::from_str("0").unwrap());
-        want.insert("c".to_string(), U254::from_str("100500").unwrap());
-        assert_eq!(want, result);
-
-        // embedded objects
-        let i = r#"{ "a": { "b": true } }"#;
-        let result = parse_signals_json(i.as_bytes(), &ff).unwrap();
-        let mut want: HashMap<String, U254> = HashMap::new();
-        want.insert("a.b".to_string(), U254::from_str("1").unwrap());
-        assert_eq!(want, result);
-
-        // null error
-        let i = r#"{ "a": { "b": null } }"#;
-        let result = parse_signals_json(i.as_bytes(), &ff);
-        let binding = result.unwrap_err();
-        let err = binding.downcast_ref::<RuntimeError>().unwrap();
-        assert!(matches!(err, RuntimeError::InvalidSignalsJson(x) if x == "unexpected null value at path a.b"));
-
-        // Negative number
-        let i = r#"{ "a": { "b": -4 } }"#;
-        let result = parse_signals_json(i.as_bytes(), &ff).unwrap();
-        let mut want: HashMap<String, U254> = HashMap::new();
-        want.insert("a.b".to_string(), U254::from_str("21888242871839275222246405745257275088548364400416034343698204186575808495613").unwrap());
-        assert_eq!(want, result);
-
-        // Float number error
-        let i = r#"{ "a": { "b": 8.3 } }"#;
-        let result = parse_signals_json(i.as_bytes(), &ff);
-        let binding = result.unwrap_err();
-        let err = binding.downcast_ref::<RuntimeError>().unwrap();
-        let msg = err.to_string();
-        assert!(matches!(err, RuntimeError::InvalidSignalsJson(x) if x == "invalid number at path a.b: 8.3"), "{}", msg);
-
-        // string
-        let i = r#"{ "a": { "b": "8" } }"#;
-        let result = parse_signals_json(i.as_bytes(), &ff).unwrap();
-        let mut want: HashMap<String, U254> = HashMap::new();
-        want.insert("a.b".to_string(), U254::from_str("8").unwrap());
-        assert_eq!(want, result);
-
-        // array
-        let i = r#"{ "a": { "b": ["8", 2, 3] } }"#;
-        let result = parse_signals_json(i.as_bytes(), &ff).unwrap();
-        let mut want: HashMap<String, U254> = HashMap::new();
-        want.insert("a.b[0]".to_string(), U254::from_str("8").unwrap());
-        want.insert("a.b[1]".to_string(), U254::from_str("2").unwrap());
-        want.insert("a.b[2]".to_string(), U254::from_str("3").unwrap());
-        assert_eq!(want, result);
-
-        // buses and arrays
-        let i = r#"{
-  "a": ["300", 3, "8432", 3, 2],
-  "inB": "100500",
-  "v": {
-    "v": [
-      {
-        "start": {"x": 3, "y": 5},
-        "end": {"x": 6, "y": 7}
-      },
-      {
-        "start": {"x": 8, "y": 9},
-        "end": {"x": 10, "y": 11}
-      }
-    ]
-  }
-}"#;
-        let result = parse_signals_json(i.as_bytes(), &ff).unwrap();
-        let mut want: HashMap<String, U254> = HashMap::new();
-        want.insert("a[0]".to_string(), U254::from_str("300").unwrap());
-        want.insert("a[1]".to_string(), U254::from_str("3").unwrap());
-        want.insert("a[2]".to_string(), U254::from_str("8432").unwrap());
-        want.insert("a[3]".to_string(), U254::from_str("3").unwrap());
-        want.insert("a[4]".to_string(), U254::from_str("2").unwrap());
-        want.insert("inB".to_string(), U254::from_str("100500").unwrap());
-        want.insert("v.v[0].start.x".to_string(), U254::from_str("3").unwrap());
-        want.insert("v.v[0].start.y".to_string(), U254::from_str("5").unwrap());
-        want.insert("v.v[0].end.x".to_string(), U254::from_str("6").unwrap());
-        want.insert("v.v[0].end.y".to_string(), U254::from_str("7").unwrap());
-        want.insert("v.v[1].start.x".to_string(), U254::from_str("8").unwrap());
-        want.insert("v.v[1].start.y".to_string(), U254::from_str("9").unwrap());
-        want.insert("v.v[1].end.x".to_string(), U254::from_str("10").unwrap());
-        want.insert("v.v[1].end.y".to_string(), U254::from_str("11").unwrap());
-        assert_eq!(want, result);
     }
 
     fn assign_ff(var_name: &str, expr: &FfExpr) -> Statement {
@@ -2620,130 +1913,4 @@ x_0 = get_signal i64.1
         }
     }
 
-    #[test]
-    fn test_init_signals() {
-        // Parse the CVM file to get types and template information
-        let cvm_content = include_str!("../../tests/cvm-compile/data/test_init_signals__cvm.txt");
-        let sym_content = include_str!("../../tests/cvm-compile/data/test_init_signals__sym.txt");
-
-        let program = parse(cvm_content).unwrap();
-
-        let field = Field::new(bn254_prime);
-
-        let inputs_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/cvm-compile/data/test_init_signals__inputs.json");
-
-        // Create circuit with input_infos and types built inside compile
-        let circuit = compile(&field, &program, sym_content).unwrap();
-
-        // Call init_signals with the new signature
-        let result = init_signals::<U254, _>(
-            inputs_path.to_string_lossy().as_ref(),
-            44, // signals_num
-            &field,
-            &circuit.types,
-            &circuit.input_infos,
-        ).unwrap();
-
-        // Expected result
-        let want: Vec<Option<U254>> = vec![
-            Some(U254::one()), // 0
-            None, // 1
-            None, // 2
-            None, // 3
-            None, // 4
-            None, // 5
-            None, // 6
-            None, // 7
-            None, // 8
-            None, // 9
-            None, // 10
-            Some(U254::from_str("1").unwrap()), // 11
-            Some(U254::from_str("2").unwrap()), // 12
-            Some(U254::from_str("3").unwrap()), // 13
-            Some(U254::from_str("4").unwrap()), // 14
-            Some(U254::from_str("5").unwrap()), // 15
-            Some(U254::from_str("6").unwrap()), // 16
-            Some(U254::from_str("7").unwrap()), // 17
-            Some(U254::from_str("8").unwrap()), // 18
-            Some(U254::from_str("9").unwrap()), // 19
-            Some(U254::from_str("10").unwrap()), // 20
-            Some(U254::from_str("11").unwrap()), // 21
-            Some(U254::from_str("12").unwrap()), // 22
-            Some(U254::from_str("13").unwrap()), // 23
-            Some(U254::from_str("14").unwrap()), // 24
-            None, // 25
-            None, // 26
-            None, // 27
-            None, // 28
-            None, // 29
-            None, // 30
-            None, // 31
-            None, // 32
-            None, // 33
-            None, // 34
-            None, // 35
-            None, // 36
-            None, // 37
-            None, // 38
-            None, // 39
-            None, // 40
-            None, // 41
-            None, // 42
-            None, // 43
-        ];
-
-        assert_eq!(result, want);
-    }
-
-    #[test]
-    fn test_array_inputs() {
-        // Parse the CVM file to get types and template information
-        let cvm_content = include_str!("../../tests/cvm-compile/data/test_array_inputs__cvm.txt");
-        let sym_content = include_str!("../../tests/cvm-compile/data/test_array_inputs__sym.txt");
-
-        let program = parse(cvm_content).unwrap();
-
-        let field = Field::new(bn254_prime);
-
-        let inputs_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/cvm-compile/data/test_array_inputs__inputs.json");
-
-        // Create circuit with input_infos and types built inside compile
-        let circuit = compile(&field, &program, sym_content).unwrap();
-
-        // Call init_signals with the new signature
-        let result = init_signals::<U254, _>(
-            inputs_path.to_string_lossy().as_ref(),
-            19, // signals_num
-            &field,
-            &circuit.types,
-            &circuit.input_infos,
-        ).unwrap();
-
-        // Expected result
-        let want: Vec<Option<U254>> = vec![
-            Some(U254::one()), // 0
-            None, // 1
-            None, // 2
-            None, // 3
-            None, // 4
-            None, // 5
-            None, // 6
-            Some(U254::from_str("1").unwrap()), // 7
-            Some(U254::from_str("2").unwrap()), // 8
-            Some(U254::from_str("3").unwrap()), // 9
-            Some(U254::from_str("4").unwrap()), // 10
-            Some(U254::from_str("5").unwrap()), // 11
-            Some(U254::from_str("6").unwrap()), // 12
-            Some(U254::from_str("7").unwrap()), // 13
-            Some(U254::from_str("8").unwrap()), // 14
-            Some(U254::from_str("9").unwrap()), // 15
-            Some(U254::from_str("10").unwrap()), // 16
-            Some(U254::from_str("11").unwrap()), // 17
-            Some(U254::from_str("12").unwrap()), // 18
-        ];
-
-        assert_eq!(result, want);
-    }
 }

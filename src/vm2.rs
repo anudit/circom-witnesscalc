@@ -108,95 +108,104 @@ pub enum OpCode {
     // stack_ff:0 contains right operand
     // stack_ff:-1 contains left operand
     // Result pushed to stack_ff (1 if lhs > rhs, 0 otherwise)
-    OpGt                 = 38,
+    OpGt                 = 32,
     // Integer multiplication (i64.mul)
     // stack_i64:0 contains right operand
     // stack_i64:-1 contains left operand
     // Result pushed to stack_i64
-    OpI64Mul             = 32,
+    OpI64Mul             = 33,
     // Integer less-than-or-equal comparison (i64.le)
     // stack_i64:0 contains right operand
     // stack_i64:-1 contains left operand
     // Result pushed to stack_i64 (1 if lhs <= rhs, 0 otherwise)
-    OpI64Lte             = 33,
+    OpI64Lte             = 34,
     // Wrap field element to i64 (i64.wrap_ff)
     // stack_ff:0 contains the field element
     // Result pushed to stack_i64
-    I64WrapFf            = 34,
+    I64WrapFf            = 35,
     // Field shift right (ff.shr)
     // stack_ff:0 contains right operand (shift amount)
     // stack_ff:-1 contains left operand (value to shift)
     // Result pushed to stack_ff
-    OpShr                = 35,
+    OpShr                = 36,
     // Field bitwise AND (ff.band)
     // stack_ff:0 contains right operand
     // stack_ff:-1 contains left operand
     // Result pushed to stack_ff
-    OpBand               = 36,
-    OpRem                = 37,
+    OpBand               = 37,
+    OpRem                = 38,
     // Logical AND operation for field elements
     // stack_ff:0 contains right operand
     // stack_ff:-1 contains left operand
     // Result pushed to stack_ff (1 if both operands non-zero, 0 otherwise)
-    OpAnd                = 48,
+    OpAnd                = 39,
     // Get template ID of a component
     // stack_i64:0 contains the component index
     // Result pushed to stack_i64 (template_id of the component)
-    GetTemplateId        = 39,
+    GetTemplateId        = 40,
     // Get signal position in template
     // stack_i64:0 contains template_id
     // stack_i64:-1 contains signal_id
     // Result pushed to stack_i64 (offset of the signal)
-    GetTemplateSignalPosition = 40,
+    GetTemplateSignalPosition = 41,
     // Get signal size in template
     // stack_i64:0 contains template_id
     // stack_i64:-1 contains signal_id
     // Result pushed to stack_i64 (size of the signal)
-    GetTemplateSignalSize = 41,
+    GetTemplateSignalSize = 42,
     // Shift left operation for field elements
     // stack_ff:0 contains rhs (shift amount)
     // stack_ff:-1 contains lhs (value to shift)
     // Result pushed to stack_ff (lhs << rhs)
-    OpShl                = 42,
+    OpShl                = 43,
     // Return from function with single field element
     // stack_ff:0 contains the return value
-    FfReturn             = 43,
+    FfReturn             = 44,
     // Bitwise XOR operation for field elements
     // stack_ff:0 contains rhs
     // stack_ff:-1 contains lhs
     // Result pushed to stack_ff (lhs ^ rhs)
-    OpBxor               = 44,
+    OpBxor               = 45,
     // Bitwise OR operation for field elements
     // stack_ff:0 contains rhs
     // stack_ff:-1 contains lhs
     // Result pushed to stack_ff (lhs | rhs)
-    OpBor                = 45,
+    OpBor                = 46,
+    // Bitwise NOT operation for field elements
+    // stack_ff:0 contains operand
+    // Result pushed to stack_ff (~operand)
+    OpBnot               = 47,
     // Greater than or equal comparison for field elements
     // stack_ff:0 contains rhs
     // stack_ff:-1 contains lhs
     // Result pushed to stack_ff (lhs >= rhs)
-    OpGe                 = 46,
+    OpGe                 = 48,
     // Store component input and decrement counter without checking
     // stack_ff contains the value to store
     // stack_i64:0 contains the signal index
     // stack_i64:-1 contains the component index
-    StoreCmpInputCnt     = 47,
+    StoreCmpInputCnt     = 49,
     // Integer division in field arithmetic (ff.idiv)
     // stack_ff:0 contains divisor
     // stack_ff:-1 contains dividend
     // Result pushed to stack_ff
-    OpIdiv               = 49,
+    OpIdiv               = 50,
     // Field less-than-or-equal comparison (ff.le)
     // stack_ff:0 contains right operand
     // stack_ff:-1 contains left operand
     // Result pushed to stack_ff (1 if lhs <= rhs, 0 otherwise)
-    OpLe                 = 50,
+    OpLe                 = 51,
     // Gets the length of a specific dimension of a signal in a template
     // stack_i64:0 contains template_id
     // stack_i64:-1 contains signal_id
     // stack_i64:-2 contains dimension_index
     // Result pushed to stack_i64 (length of the dimension)
-    GetTemplateSignalDimension = 51,
+    GetTemplateSignalDimension = 52,
+    // Power operation for field elements (ff.pow)
+    // stack_ff:0 contains base
+    // stack_ff:-1 contains exponent
+    // Result pushed to stack_ff (base^exponent mod prime)
+    OpPow                = 53,
 }
 
 pub struct Component {
@@ -1067,6 +1076,9 @@ where
         OpCode::GetTemplateSignalDimension => {
             output.push_str("GetTemplateSignalDimension");
         }
+        OpCode::OpPow => {
+            output.push_str("OpPow");
+        }
         OpCode::OpShl => {
             output.push_str("OpShl");
         }
@@ -1078,6 +1090,9 @@ where
         }
         OpCode::OpBor => {
             output.push_str("OpBor");
+        }
+        OpCode::OpBnot => {
+            output.push_str("OpBnot");
         }
         OpCode::OpGe => {
             output.push_str("OpGe");
@@ -1802,10 +1817,19 @@ where
                 let rhs = vm.pop_ff()?;
                 vm.push_ff(ff.bor(lhs, rhs));
             }
+            OpCode::OpBnot => {
+                let operand = vm.pop_ff()?;
+                vm.push_ff(ff.bnot(operand));
+            }
             OpCode::OpRem => {
                 let lhs = vm.pop_ff()?;
                 let rhs = vm.pop_ff()?;
                 vm.push_ff(ff.modulo(lhs, rhs));
+            }
+            OpCode::OpPow => {
+                let base = vm.pop_ff()?;
+                let exponent = vm.pop_ff()?;
+                vm.push_ff(ff.pow(base, exponent));
             }
             OpCode::GetTemplateId => {
                 let cmp_idx = vm.pop_usize()?;

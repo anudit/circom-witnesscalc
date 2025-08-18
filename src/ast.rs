@@ -355,6 +355,8 @@ pub enum FfExpr {
     And(Box<FfExpr>, Box<FfExpr>),
     Bxor(Box<FfExpr>, Box<FfExpr>),
     Bor(Box<FfExpr>, Box<FfExpr>),
+    Bnot(Box<FfExpr>),
+    Pow(Box<FfExpr>, Box<FfExpr>),
     Lt(Box<FfExpr>, Box<FfExpr>),
     Le(Box<FfExpr>, Box<FfExpr>),
     Gt(Box<FfExpr>, Box<FfExpr>),

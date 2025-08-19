@@ -139,6 +139,11 @@ pub enum OpCode {
     // stack_ff:-1 contains left operand
     // Result pushed to stack_ff (1 if both operands non-zero, 0 otherwise)
     OpAnd                = 39,
+    // Logical OR operation for field elements
+    // stack_ff:0 contains right operand
+    // stack_ff:-1 contains left operand
+    // Result pushed to stack_ff (1 if either operand non-zero, 0 otherwise)
+    OpOr                 = 54,
     // Get template ID of a component
     // stack_i64:0 contains the component index
     // Result pushed to stack_i64 (template_id of the component)
@@ -1064,6 +1069,9 @@ where
         OpCode::OpAnd => {
             output.push_str("OpAnd");
         }
+        OpCode::OpOr => {
+            output.push_str("OpOr");
+        }
         OpCode::GetTemplateId => {
             output.push_str("GetTemplateId");
         }
@@ -1806,6 +1814,11 @@ where
                 let lhs = vm.pop_ff()?;
                 let rhs = vm.pop_ff()?;
                 vm.push_ff(ff.land(lhs, rhs));
+            }
+            OpCode::OpOr => {
+                let lhs = vm.pop_ff()?;
+                let rhs = vm.pop_ff()?;
+                vm.push_ff(ff.lor(lhs, rhs));
             }
             OpCode::OpBxor => {
                 let lhs = vm.pop_ff()?;

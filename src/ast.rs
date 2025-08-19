@@ -353,6 +353,7 @@ pub enum FfExpr {
     Shl(Box<FfExpr>, Box<FfExpr>),
     FfBand(Box<FfExpr>, Box<FfExpr>),
     And(Box<FfExpr>, Box<FfExpr>),
+    Or(Box<FfExpr>, Box<FfExpr>),
     Bxor(Box<FfExpr>, Box<FfExpr>),
     Bor(Box<FfExpr>, Box<FfExpr>),
     Bnot(Box<FfExpr>),

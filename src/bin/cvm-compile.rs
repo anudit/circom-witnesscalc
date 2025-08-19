@@ -716,6 +716,11 @@ where
             ff_expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpAnd as u8);
         },
+        FfExpr::Or(lhs, rhs) => {
+            ff_expression(ctx, ff, rhs)?;
+            ff_expression(ctx, ff, lhs)?;
+            ctx.code.push(OpCode::OpOr as u8);
+        },
         FfExpr::Bxor(lhs, rhs) => {
             ff_expression(ctx, ff, rhs)?;
             ff_expression(ctx, ff, lhs)?;

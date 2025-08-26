@@ -453,6 +453,7 @@ fn calculate_args_size<T: FieldOps>(code: &[u8], arg_count: u8) -> Result<usize,
             4..=7 => offset += 16, // ff.memory (addr + size, both i64)
             8..=11 => offset += 16, // i64.memory (addr + size, both i64)
             12..=15 => offset += 16, // signal (idx + size, both i64)
+            16..=23 => offset += 24, // subcomponent signal (cmp_idx + sig_idg + size, all i64)
             _ => return Err(RuntimeError::CodeIndexOutOfBounds),
         }
     }
@@ -460,7 +461,10 @@ fn calculate_args_size<T: FieldOps>(code: &[u8], arg_count: u8) -> Result<usize,
 }
 
 // Helper function to process function arguments
-fn process_function_arguments<T: FieldOps>(vm: &mut VM<T>, signals: &[Option<T>], code: &[u8], arg_count: u8, component_signals_start: usize) -> Result<(), RuntimeError> {
+fn process_function_arguments<T: FieldOps>(
+    vm: &mut VM<T>, signals: &[Option<T>], code: &[u8], arg_count: u8,
+    component_tree: &Component) -> Result<(), RuntimeError> {
+
     let mut offset = 0;
     let mut ff_arg_idx = 0;
     let mut i64_arg_idx = 0;
@@ -713,7 +717,7 @@ fn process_function_arguments<T: FieldOps>(vm: &mut VM<T>, signals: &[Option<T>]
                 }
 
                 // Add component's base signal offset to the signal index
-                let absolute_signal_idx = component_signals_start + signal_idx;
+                let absolute_signal_idx = component_tree.signals_start + signal_idx;
                 
                 // Check that all signal values are set before copying
                 for i in 0..size {
@@ -726,6 +730,89 @@ fn process_function_arguments<T: FieldOps>(vm: &mut VM<T>, signals: &[Option<T>]
                     &signals[absolute_signal_idx..(size + absolute_signal_idx)]);
 
                 ff_arg_idx += size;
+            }
+            0b0001_0000u8..=0b0001_0111u8 => { // signal argument (only valid in component context)
+                // Decode bit flags
+                let cmp_idx_is_variable = (arg_type & 1) != 0;
+                let sig_idx_is_variable = (arg_type & 2) != 0;
+                let size_is_variable = (arg_type & 4) != 0;
+
+                // Get caller's context from the call frame we just pushed
+                let frame = vm.call_stack.last()
+                    .ok_or(RuntimeError::CallStackUnderflow)?;
+                let caller_stack_base = frame.return_stack_base_pointer_i64;
+
+                // Read and resolve signal index
+                let cmp_idx = if cmp_idx_is_variable {
+                    // It's a variable index - need to load from caller's stack
+                    let var_idx = i64::from_le_bytes(code[offset..offset+8].try_into().unwrap()) as usize;
+                    offset += 8;
+
+                    *vm.stack_i64.get(caller_stack_base + var_idx)
+                        .and_then(|v| v.as_ref())
+                        .ok_or(RuntimeError::StackVariableIsNotSet)? as usize
+                } else {
+                    // It's a literal value
+                    let value = i64::from_le_bytes(code[offset..offset+8].try_into().unwrap());
+                    offset += 8;
+                    value as usize
+                };
+
+                let sig_idx = if sig_idx_is_variable {
+                    // It's a variable index - need to load from caller's stack
+                    let var_idx = i64::from_le_bytes(code[offset..offset+8].try_into().unwrap()) as usize;
+                    offset += 8;
+
+                    *vm.stack_i64.get(caller_stack_base + var_idx)
+                        .and_then(|v| v.as_ref())
+                        .ok_or(RuntimeError::StackVariableIsNotSet)? as usize
+                } else {
+                    // It's a literal value
+                    let value = i64::from_le_bytes(code[offset..offset+8].try_into().unwrap());
+                    offset += 8;
+                    value as usize
+                };
+
+                // Read and resolve size
+                let size = if size_is_variable {
+                    // It's a variable index - need to load from caller's stack
+                    let var_idx = i64::from_le_bytes(code[offset..offset+8].try_into().unwrap()) as usize;
+                    offset += 8;
+
+                    *vm.stack_i64.get(caller_stack_base + var_idx)
+                        .and_then(|v| v.as_ref())
+                        .ok_or(RuntimeError::StackVariableIsNotSet)? as usize
+                } else {
+                    // It's a literal value
+                    let value = i64::from_le_bytes(code[offset..offset+8].try_into().unwrap());
+                    offset += 8;
+                    value as usize
+                };
+
+                // Copy from component signals to function's memory
+                let dst_base = vm.memory_base_pointer_ff + ff_arg_idx;
+                if vm.memory_ff.len() <= dst_base + size {
+                    vm.memory_ff.resize(dst_base + size, None);
+                }
+
+                match component_tree.components[cmp_idx] {
+                    None => {
+                        return Err(RuntimeError::UninitializedComponent)
+                    }
+                    Some(ref c) => {
+                        // Add component's base signal offset to the signal index
+                        let absolute_signal_idx = c.signals_start + sig_idx;
+                        // Check that all signal values are set before copying
+                        for i in 0..size {
+                            if signals[absolute_signal_idx + i].is_none() {
+                                return Err(RuntimeError::SignalIsNotSet);
+                            }
+                        }
+                        vm.memory_ff[dst_base..(size + dst_base)].copy_from_slice(
+                            &signals[absolute_signal_idx..(size + absolute_signal_idx)]);
+                        ff_arg_idx += size;
+                    }
+                }
             }
             _ => return Err(RuntimeError::UnknownArgumentType(arg_type)),
         }
@@ -1647,7 +1734,9 @@ where
                 vm.stack_i64.resize(vm.stack_base_pointer_i64 + circuit.functions[func_idx].vars_i64_num, None);
                 
                 // Process arguments and copy to function memory
-                process_function_arguments(&mut vm, signals, &code[ip..], arg_count, component_tree.signals_start)?;
+                process_function_arguments(
+                    &mut vm, signals, &code[ip..], arg_count,
+                    component_tree)?;
                 
                 // Switch to function execution context
                 #[cfg(feature = "debug_vm2")]

@@ -250,6 +250,11 @@ fn parse_call_argument(input: &mut &str) -> ModalResult<CallArgument> {
                 (parse_i64_operand, preceded(literal(","), parse_i64_operand)),
                 literal(")")
             ).map(|(idx, size)| CallArgument::Signal { idx, size }),
+            "subcmpsignal" => delimited(
+                literal("("),
+                (parse_i64_operand, preceded(literal(","), parse_i64_operand), preceded(literal(","), parse_i64_operand)),
+                literal(")")
+            ).map(|(cmp_idx, sig_idx, size)| CallArgument::CmpSignal { cmp_idx, sig_idx, size }),
             _ => fail::<_, CallArgument, _>,
         },
         // Try to parse literals

@@ -263,6 +263,7 @@ pub enum CallArgument {
     I64Memory { addr: I64Operand, size: I64Operand },
     FfMemory { addr: I64Operand, size: I64Operand },
     Signal { idx: I64Operand, size: I64Operand },
+    CmpSignal { cmp_idx: I64Operand, sig_idx: I64Operand, size: I64Operand },
 }
 
 #[cfg_attr(test, derive(PartialEq, Debug))]

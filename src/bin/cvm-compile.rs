@@ -791,23 +791,32 @@ where
                     }
                     ast::CallArgument::I64Memory { addr, size } => {
                         // i64.memory uses types 8-11 (base 8 = 0b1000)
-                        let arg_type = calc_arg_type(8u8, addr, size);
+                        let arg_type = calc_arg_type(8u8, addr, size, None);
                         ctx.code.push(arg_type);
                         ctx.append_i64operand(addr);
                         ctx.append_i64operand(size);
                     }
                     ast::CallArgument::FfMemory { addr, size } => {
                         // ff.memory uses types 4-7 (base 4 = 0b0100)
-                        let arg_type = calc_arg_type(4u8, addr, size);
+                        let arg_type = calc_arg_type(4u8, addr, size, None);
                         ctx.code.push(arg_type);
                         ctx.append_i64operand(addr);
                         ctx.append_i64operand(size);
                     }
                     ast::CallArgument::Signal { idx, size } => {
                         // signal uses types 12-15 (base 12 = 0b1100)
-                        let arg_type = calc_arg_type(12u8, idx, size);
+                        let arg_type = calc_arg_type(0b0000_1100u8, idx, size, None);
                         ctx.code.push(arg_type);
                         ctx.append_i64operand(idx);
+                        ctx.append_i64operand(size);
+                    }
+                    ast::CallArgument::CmpSignal { cmp_idx, sig_idx, size } => {
+                        // signal uses types 16-23 (base 16 = 0b0001_0000)
+                        let arg_type = calc_arg_type(
+                            0b0001_0000u8, cmp_idx, sig_idx, Some(size));
+                        ctx.code.push(arg_type);
+                        ctx.append_i64operand(cmp_idx);
+                        ctx.append_i64operand(sig_idx);
                         ctx.append_i64operand(size);
                     }
                 }
@@ -1054,23 +1063,32 @@ where
                     }
                     ast::CallArgument::I64Memory { addr, size } => {
                         // i64.memory uses types 8-11 (base 8 = 0b1000)
-                        let arg_type = calc_arg_type(8u8, addr, size);
+                        let arg_type = calc_arg_type(8u8, addr, size, None);
                         ctx.code.push(arg_type);
                         ctx.append_i64operand(addr);
                         ctx.append_i64operand(size);
                     }
                     ast::CallArgument::FfMemory { addr, size } => {
                         // ff.memory uses types 4-7 (base 4 = 0b0100)
-                        let arg_type = calc_arg_type(4u8, addr, size);
+                        let arg_type = calc_arg_type(4u8, addr, size, None);
                         ctx.code.push(arg_type);
                         ctx.append_i64operand(addr);
                         ctx.append_i64operand(size);
                     }
                     ast::CallArgument::Signal { idx, size } => {
                         // signal uses types 12-15 (base 12 = 0b1100)
-                        let arg_type = calc_arg_type(12u8, idx, size);
+                        let arg_type = calc_arg_type(12u8, idx, size, None);
                         ctx.code.push(arg_type);
                         ctx.append_i64operand(idx);
+                        ctx.append_i64operand(size);
+                    }
+                    ast::CallArgument::CmpSignal { cmp_idx, sig_idx, size } => {
+                        // signal uses types 16-23 (base 16 = 0b0001_0000)
+                        let arg_type = calc_arg_type(
+                            0b0001_0000u8, cmp_idx, sig_idx, Some(size));
+                        ctx.code.push(arg_type);
+                        ctx.append_i64operand(cmp_idx);
+                        ctx.append_i64operand(sig_idx);
                         ctx.append_i64operand(size);
                     }
                 }
@@ -1086,7 +1104,7 @@ where
 // Calculate the argument type based on the base value. The base value should
 // have two lowest bits set to zero. Depending on first and second arguments,
 // we set the bits 0 or 1 to indicate if the argument is a variable or a literal.
-fn calc_arg_type(base: u8, arg1: &I64Operand, arg2: &I64Operand) -> u8 {
+fn calc_arg_type(base: u8, arg1: &I64Operand, arg2: &I64Operand, arg3: Option<&I64Operand>) -> u8 {
     let mut arg_type = base;
     match arg1 {
         I64Operand::Variable(_) => { arg_type |= 1; }
@@ -1095,6 +1113,12 @@ fn calc_arg_type(base: u8, arg1: &I64Operand, arg2: &I64Operand) -> u8 {
     match arg2 {
         I64Operand::Variable(_) => { arg_type |= 2; }
         I64Operand::Literal(_) => (),
+    }
+    if let Some(arg3) = arg3 {
+        match arg3 {
+            I64Operand::Variable(_) => { arg_type |= 4; }
+            I64Operand::Literal(_) => (),
+        }
     }
     arg_type
 }

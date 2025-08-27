@@ -529,15 +529,15 @@ mod tests {
     fn test_init_signals() {
         // to regenerate the test data from cvm & sym files into cwd, run:
         // cargo run --package circom-witnesscalc --bin cvm-compile ./tests/vm2_setup/data/test_init_signals__cvm.txt ./tests/vm2_setup/data/test_init_signals__sym.txt ./tests/vm2_setup/data/test_init_signals__bc2.wcd
-        let cwd = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        let wcd = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/vm2_setup/data/test_init_signals__bc2.wcd");
-        let cwd_data = std::fs::read(cwd).unwrap();
-        let mut cwd_reader = std::io::Cursor::new(cwd_data.as_slice());
-        let prime = read_witnesscalc_vm2_header(&mut cwd_reader).unwrap();
+        let wcd_data = std::fs::read(wcd).unwrap();
+        let mut wcd_reader = std::io::Cursor::new(wcd_data.as_slice());
+        let prime = read_witnesscalc_vm2_header(&mut wcd_reader).unwrap();
         let want_prime = BigUint::from_bytes_le(&FieldOps::to_le_bytes(&bn254_prime));
         assert_eq!(want_prime, prime);
         let ff = Field::new(bn254_prime);
-        let circuit = deserialize_witnesscalc_vm2_body(&mut cwd_reader, ff.clone()).unwrap();
+        let circuit = deserialize_witnesscalc_vm2_body(&mut wcd_reader, ff.clone()).unwrap();
         let inputs_content = include_str!("../tests/vm2_setup/data/test_init_signals__inputs.json");
 
         let inputs_reader = std::io::Cursor::new(&inputs_content);
@@ -601,17 +601,17 @@ mod tests {
         let inputs_content = std::fs::read(inputs_path).unwrap();
         let inputs_reader = std::io::Cursor::new(&inputs_content);
 
-        // to regenerate the test data from cvm & sym files into cwd, run:
+        // to regenerate the test data from cvm & sym files into wcd, run:
         // cargo run --package circom-witnesscalc --bin cvm-compile ./tests/vm2_setup/data/test_array_inputs__cvm.txt ./tests/vm2_setup/data/test_array_inputs__sym.txt ./tests/vm2_setup/data/test_array_inputs__bc2.wcd
-        let cwd = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        let wcd = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/vm2_setup/data/test_array_inputs__bc2.wcd");
-        let cwd_data = std::fs::read(cwd).unwrap();
-        let mut cwd_reader = std::io::Cursor::new(cwd_data.as_slice());
-        let prime = read_witnesscalc_vm2_header(&mut cwd_reader).unwrap();
+        let wcd_data = std::fs::read(wcd).unwrap();
+        let mut wcd_reader = std::io::Cursor::new(wcd_data.as_slice());
+        let prime = read_witnesscalc_vm2_header(&mut wcd_reader).unwrap();
         let want_prime = BigUint::from_bytes_le(&FieldOps::to_le_bytes(&bn254_prime));
         assert_eq!(want_prime, prime);
         let ff = Field::new(bn254_prime);
-        let circuit = deserialize_witnesscalc_vm2_body(&mut cwd_reader, ff.clone()).unwrap();
+        let circuit = deserialize_witnesscalc_vm2_body(&mut wcd_reader, ff.clone()).unwrap();
 
         // Call init_signals with the new signature
         let result = init_signals(

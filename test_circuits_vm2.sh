@@ -107,7 +107,7 @@ function test_circuit() {
   pushd "$workdir" > /dev/null
 
   # Run Circom to generate assembly file.
-  circom --r1cs --sym --cvm --wasm "${include_args[@]}" "$circuit_path"
+  time circom --r1cs --sym --cvm --wasm "${include_args[@]}" "$circuit_path"
 
   # run commands from the project directory
   pushd "${script_dir}" > /dev/null
@@ -115,7 +115,7 @@ function test_circuit() {
   time target/release/cvm-compile \
     "$cvm_path" "$sym_path" "${circuit_bytecode_path}"
 
-  time target/release/calc-witness-vm2 \
+  time target/release/calc-witness \
     "${circuit_bytecode_path}" "${inputs_path}" "${witness_path}"
 
   popd > /dev/null

@@ -25,7 +25,7 @@ use ark_ff::{BigInteger, PrimeField};
 use indicatif::{ProgressBar, ProgressStyle};
 use crate::field::{bn254_prime, Field, FieldOperations, FieldOps, U254, U64};
 use crate::storage::proto_deserializer::deserialize_witnesscalc_graph_from_bytes;
-use crate::storage::{deserialize_witnesscalc_vm2_body, read_witnesscalc_vm2_header};
+use crate::storage::{deserialize_witnesscalc_vm2_body, read_witnesscalc_vm2_header, WITNESSCALC_CVM_MAGIC, WITNESSCALC_GRAPH_MAGIC};
 use crate::vm2::{execute, Circuit};
 use crate::vm2_setup::{init_signals, build_component_tree};
 
@@ -94,7 +94,11 @@ pub unsafe extern "C" fn gw_calc_witness(
                 inputs_str = x;
             }
             Err(e) => {
-                prepare_status(status, GW_ERROR_CODE_ERROR, format!("Failed to parse inputs: {}", e).as_str());
+                prepare_status(
+                    status, GW_ERROR_CODE_ERROR,
+                    format!(
+                        "Failed to parse inputs as UTF-8 string: {}",
+                        e).as_str());
                 return 1;
             }
         }
@@ -157,6 +161,18 @@ pub fn wtns_from_witness2<const FS: usize, T: FieldOps>(
 }
 
 pub fn calc_witness(
+    inputs: &str,
+    wcd_data: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    if wcd_data.starts_with(WITNESSCALC_GRAPH_MAGIC) {
+        calc_witness_graph(inputs, wcd_data)
+    } else if wcd_data.starts_with(WITNESSCALC_CVM_MAGIC) {
+        calc_witness_vm2_buf(wcd_data, inputs)
+    } else {
+        Err("Unknown WCD file format".into())
+    }
+}
+
+fn calc_witness_graph(
     inputs: &str,
     graph_data: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
 
@@ -409,14 +425,19 @@ pub fn progress_bar(n: usize) -> ProgressBar {
     pb
 }
 
-pub fn calc_witness_vm2_buf(compiled_bytecode: &[u8], inputs_json: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+pub fn calc_witness_vm2_buf(
+    compiled_bytecode: &[u8],
+    inputs_json: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+
     let mut reader = std::io::Cursor::new(&compiled_bytecode);
+    let inputs_reader = std::io::Cursor::new(
+        inputs_json.as_bytes());
     let prime = read_witnesscalc_vm2_header(&mut reader).unwrap();
     if prime == num_bigint::BigUint::from_bytes_le(&bn254_prime.to_le_bytes_vec()) {
         let ff = Field::new(bn254_prime);
         let circuit = deserialize_witnesscalc_vm2_body(&mut reader, ff).unwrap();
         let mut witness_buf: Vec<u8> = Vec::new();
-        calculate_witness_vm2(&circuit, inputs_json, &mut witness_buf)?;
+        calculate_witness_vm2(&circuit, inputs_reader, &mut witness_buf)?;
         Ok(witness_buf)
     } else {
         Err("ERROR: Unsupported prime field".into())

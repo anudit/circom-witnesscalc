@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-set -eu
+set -eux
 
 ptau_url="https://storage.googleapis.com/zkevm/ptau/powersOfTau28_hez_final_18.ptau"
 
@@ -122,7 +122,7 @@ function test_circuit() {
 	pushd "$workdir" > /dev/null
 
 #	circom "${include_args[@]}" --prime grumpkin --r1cs --wasm "$circuit_path"
-	circom "${include_args[@]}" --r1cs --wasm "$circuit_path"
+	time circom "${include_args[@]}" --sym --r1cs --wasm "$circuit_path"
 	local r1cs_md5=$(openssl dgst -hex -md5 "${r1cs_path}" | awk '{print $2}')
 	local zkey_path="${circuit_name}_${r1cs_md5}_final.zkey"
 	local vk_path="${workdir}/${circuit_name}_${r1cs_md5}_verification_key.json"

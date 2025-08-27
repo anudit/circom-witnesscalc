@@ -70,9 +70,9 @@ fn read_signal<R: Read>(r: &mut R) -> std::io::Result<vm2::Signal> {
 
 pub mod proto_deserializer;
 
-const WITNESSCALC_GRAPH_MAGIC: &[u8] = b"wtns.graph.001";
+pub(crate) const WITNESSCALC_GRAPH_MAGIC: &[u8] = b"wtns.graph.001";
 const WITNESSCALC_VM_MAGIC: &[u8] = b"wtns.vm.001";
-const WITNESSCALC_CVM_MAGIC: &[u8] = b"wtns.cvm.001";
+pub(crate) const WITNESSCALC_CVM_MAGIC: &[u8] = b"wtns.cvm.001";
 
 const MAX_VARINT_LENGTH: usize = 10;
 

@@ -90,6 +90,8 @@ fn parse_args() -> Args {
             cvm_file = Some(args[i].clone());
         } else if output_file.is_none() {
             output_file = Some(args[i].clone());
+        } else {
+            usage(format!("unexpected argument: {}", args[i]).as_str());
         }
         i += 1;
     }

@@ -1,9 +1,12 @@
 use std::{env, fs, process};
 use std::collections::HashMap;
 use std::error::Error;
+use std::fs::File;
+use std::io::Write;
+use std::time::Instant;
 use num_bigint::BigUint;
 use num_traits::{Num, ToBytes};
-use circom_witnesscalc::{ast, vm2};
+use circom_witnesscalc::{ast, calculate_witness_vm2, vm2};
 use circom_witnesscalc::ast::{Expr, FfExpr, I64Expr, I64Operand, Statement};
 use circom_witnesscalc::field::{bn254_prime, Field, FieldOperations, FieldOps};
 #[cfg(feature = "debug_vm2")]
@@ -19,6 +22,8 @@ use circom_witnesscalc::vm2::disassemble_instruction;
 struct Args {
     cvm_file: String,
     output_file: String,
+    wtns_file: Option<String>,
+    inputs_file: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -55,9 +60,9 @@ fn parse_args() -> Args {
         eprintln!("    <output_path> File where the witness will be saved");
         eprintln!();
         eprintln!("OPTIONS:");
-        eprintln!("    -h | --help       Display this help message");
-        eprintln!("    --wtns            If file is provided, the witness will be calculated and saved in this file. Inputs file MUST be provided as well.");
-        eprintln!("    --inputs          File with inputs for the circuit. Required if --wtns is provided.");
+        eprintln!("    -h | --help            Display this help message");
+        eprintln!("    --wtns <output.wtns>   If file is provided, the witness will be calculated and saved in this file. Inputs file MUST be provided as well.");
+        eprintln!("    --inputs <inputs.json> File with inputs for the circuit. Required if --wtns is provided.");
         let exit_code = if !err_msg.is_empty() { 1i32 } else { 0i32 };
         std::process::exit(exit_code);
     };
@@ -96,9 +101,15 @@ fn parse_args() -> Args {
         i += 1;
     }
 
+    if wtns_file.is_some() && inputs_file.is_none() {
+        usage("need to provide inputs file with --inputs if --wtns is set");
+    }
+
     Args {
         cvm_file: cvm_file.unwrap_or_else(|| { usage("missing CVM file") }),
         output_file: output_file.unwrap_or_else(|| { usage("missing output file") }),
+        wtns_file: wtns_file,
+        inputs_file: inputs_file,
     }
 }
 
@@ -119,7 +130,11 @@ fn main() {
     let bn254 = BigUint::from_str_radix("21888242871839275222246405745257275088548364400416034343698204186575808495617", 10).unwrap();
     if program.prime == bn254 {
         let ff = Field::new(bn254_prime);
+
+        let start = Instant::now();
         let circuit = compile(&ff, &program).unwrap();
+        println!("Circuit compiled in: {:?}", start.elapsed());
+
         #[cfg(feature = "debug_vm2")]
         {
             for t in &circuit.templates {
@@ -127,6 +142,20 @@ fn main() {
             }
             for f in &circuit.functions {
                 disassemble::<U254>(&TF::F(f))
+            }
+        }
+
+        if let Some(ref inputs_file) = args.inputs_file {
+            let inputs_reader = File::open(inputs_file).unwrap();
+            let mut witness_buf: Vec<u8> = Vec::new();
+            let start = Instant::now();
+            calculate_witness_vm2(&circuit, &inputs_reader, &mut witness_buf).unwrap();
+            println!("Witness generated in: {:?}", start.elapsed());
+
+            if let Some(ref wtns_file) = args.wtns_file {
+                let mut f = File::create(wtns_file).unwrap();
+                f.write_all(&witness_buf).unwrap();
+                println!("Witness saved to {}", wtns_file);
             }
         }
 

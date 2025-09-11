@@ -444,7 +444,7 @@ pub fn calc_witness_vm2_buf(
     }
 }
 
-fn calculate_witness_vm2<T: FieldOps>(
+pub fn calculate_witness_vm2<T: FieldOps>(
     circuit: &Circuit<T>, inputs_json: impl std::io::Read,
     mut w: impl std::io::Write) -> Result<(), Box<dyn std::error::Error>> {
 

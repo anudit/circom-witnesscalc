@@ -112,7 +112,7 @@ function test_circuit() {
   pushd "${script_dir}" > /dev/null
 
   time target/release/cvm-compile \
-    "$cvm_path" "${circuit_bytecode_path}"
+    "$cvm_path" -o "${circuit_bytecode_path}"
 
   time target/release/calc-witness \
     "${circuit_bytecode_path}" "${inputs_path}" "${witness_path}"

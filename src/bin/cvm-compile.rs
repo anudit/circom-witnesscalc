@@ -21,7 +21,7 @@ use circom_witnesscalc::vm2::disassemble_instruction;
 
 struct Args {
     cvm_file: String,
-    output_file: String,
+    output_file: Option<String>,
     wtns_file: Option<String>,
     inputs_file: Option<String>,
 }
@@ -53,16 +53,16 @@ fn parse_args() -> Args {
             eprintln!();
         }
         eprintln!("USAGE:");
-        eprintln!("    {} <cvm_file> <output_path> [OPTIONS]", args[0]);
+        eprintln!("    {} <cvm_file> [OPTIONS]", args[0]);
         eprintln!();
         eprintln!("ARGUMENTS:");
         eprintln!("    <cvm_file>    Path to the CVM file with compiled circuit");
-        eprintln!("    <output_path> File where the witness will be saved");
         eprintln!();
         eprintln!("OPTIONS:");
         eprintln!("    -h | --help            Display this help message");
         eprintln!("    --wtns <output.wtns>   If file is provided, the witness will be calculated and saved in this file. Inputs file MUST be provided as well.");
         eprintln!("    --inputs <inputs.json> File with inputs for the circuit. Required if --wtns is provided.");
+        eprintln!("    -o <circuit.wcd>       Wile where compiled bytecode could be saved for faster execution next time.");
         let exit_code = if !err_msg.is_empty() { 1i32 } else { 0i32 };
         std::process::exit(exit_code);
     };
@@ -89,12 +89,19 @@ fn parse_args() -> Args {
                 usage("multiple inputs files");
             }
             inputs_file = Some(args[i].clone());
+        } else if args[i] == "-o" {
+            i += 1;
+            if i >= args.len() {
+                usage("missing argument for -o");
+            }
+            if output_file.is_some() {
+                usage("multiple bytecode output files");
+            }
+            output_file = Some(args[i].clone());
         } else if args[i].starts_with("-") {
             usage(format!("Unknown option: {}", args[i]).as_str());
         } else if cvm_file.is_none() {
             cvm_file = Some(args[i].clone());
-        } else if output_file.is_none() {
-            output_file = Some(args[i].clone());
         } else {
             usage(format!("unexpected argument: {}", args[i]).as_str());
         }
@@ -107,7 +114,7 @@ fn parse_args() -> Args {
 
     Args {
         cvm_file: cvm_file.unwrap_or_else(|| { usage("missing CVM file") }),
-        output_file: output_file.unwrap_or_else(|| { usage("missing output file") }),
+        output_file: output_file,
         wtns_file: wtns_file,
         inputs_file: inputs_file,
     }
@@ -125,7 +132,8 @@ fn main() {
         }
     };
 
-    let mut buf: Vec<u8> = Vec::new();
+    let mut bytecode_buf: Vec<u8> = Vec::new();
+    let mut witness_buf: Vec<u8> = Vec::new();
 
     let bn254 = BigUint::from_str_radix("21888242871839275222246405745257275088548364400416034343698204186575808495617", 10).unwrap();
     if program.prime == bn254 {
@@ -147,7 +155,6 @@ fn main() {
 
         if let Some(ref inputs_file) = args.inputs_file {
             let inputs_reader = File::open(inputs_file).unwrap();
-            let mut witness_buf: Vec<u8> = Vec::new();
             let start = Instant::now();
             calculate_witness_vm2(&circuit, &inputs_reader, &mut witness_buf).unwrap();
             println!("Witness generated in: {:?}", start.elapsed());
@@ -159,14 +166,18 @@ fn main() {
             }
         }
 
-        serialize_witnesscalc_vm2(&mut buf, &circuit).unwrap();
+        if args.output_file.is_some() {
+            serialize_witnesscalc_vm2(&mut bytecode_buf, &circuit).unwrap();
+        }
     } else {
         eprintln!("ERROR: Unsupported prime field");
         std::process::exit(1);
     }
 
-    fs::write(&args.output_file, &buf).unwrap();
-    println!("Bytecode saved into {}", args.output_file);
+    if let Some(ref output_file) = args.output_file {
+        fs::write(output_file, &bytecode_buf).unwrap();
+        println!("Bytecode saved to {}", output_file);
+    }
 }
 
 /// Build input info directly from AST Input nodes

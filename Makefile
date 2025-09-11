@@ -1,4 +1,4 @@
-all: libs-all copy-libs
+all: libs-all copy-libs zip-libs
 
 libs-all: lib-ios lib-ios-sim lib-android lib-macos
 
@@ -39,6 +39,7 @@ copy-libs:
 	# macOS
 	cp \
 		target/aarch64-apple-darwin/release/build-circuit \
+		target/aarch64-apple-darwin/release/cvm-compile \
 		target/aarch64-apple-darwin/release/calc-witness \
 		target/aarch64-apple-darwin/release/libcircom_witnesscalc.a \
 		target/aarch64-apple-darwin/release/libcircom_witnesscalc.dylib \
@@ -78,3 +79,6 @@ copy-libs:
 	# We have an error load library on android after patchelf. The -soname parameter was added to build.rs and this
 	# was commented for now.
 	# patchelf --set-soname libcircom_witnesscalc.so circom-witnesscalc/x86_64-linux-android/libcircom_witnesscalc.so
+
+zip-libs:
+	tar -zcf circom-witnesscalc.tgz circom-witnesscalc

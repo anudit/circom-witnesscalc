@@ -6,7 +6,7 @@ use winnow::combinator::{alt, preceded, repeat, terminated, seq, dispatch, fail,
 use winnow::Parser;
 use winnow::token::{literal, take_till, take_while};
 use winnow::stream::Stream;
-use crate::ast::{CallArgument, ComponentsMode, Expr, FfExpr, I64Expr, I64Operand, Signal, Statement, Template, AST, Function, Type, TypeField, TypeFieldKind};
+use crate::ast::{CallArgument, ComponentsMode, Expr, FfExpr, I64Expr, I64Operand, Signal, Statement, Template, AST, Function, Type, TypeField, TypeFieldKind, Input};
 
 fn parse_prime(input: &mut &str) -> ModalResult<BigUint> {
     let (bi, ): (BigUint, ) = seq!(
@@ -191,6 +191,46 @@ fn parse_type(input: &mut &str) -> ModalResult<Type> {
         name: name.strip_prefix('$').unwrap_or(name).to_string(),
         fields,
     })
+}
+
+fn parse_inputs(input: &mut &str) -> ModalResult<Vec<Input>> {
+    let (_, _, count) = (
+        literal("%%input"),
+        space1,
+        parse_usize,
+    ).parse_next(input)?;
+    
+    // Handle optional newline or space after count
+    let _ = alt((
+        (space0, opt(parse_eol_comment), line_ending).void(),
+        space1.void(),
+    )).parse_next(input)?;
+    
+    let mut inputs = Vec::new();
+    
+    for _ in 0..count {
+        // Skip any leading whitespace/newlines
+        let _ = (space0, opt(line_ending), space0).parse_next(input)?;
+        
+        // Parse quoted name
+        let _ = literal("\"").parse_next(input)?;
+        let name = take_till(0.., |c| c == '"').parse_next(input)?;
+        let _ = literal("\"").parse_next(input)?;
+        let _ = space1.parse_next(input)?;
+        
+        // Parse signal type (ff or bus_N)
+        let signal = alt((
+            parse_ff_signal,
+            parse_bus_signal,
+        )).parse_next(input)?;
+        
+        inputs.push(Input {
+            name: name.to_string(),
+            signal,
+        });
+    }
+    
+    Ok(inputs)
 }
 
 fn parse_i64_literal(input: &mut &str) -> ModalResult<i64> {
@@ -897,6 +937,9 @@ fn parse_ast(i: &mut &str) -> ModalResult<AST> {
         witness: parse_witness_list
             .context(StrContext::Expected(StrContextValue::StringLiteral("%%witness"))),
         _: repeat::<_, _, (), _, _>(0.., parse_empty_line),
+        inputs: parse_inputs
+            .context(StrContext::Expected(StrContextValue::StringLiteral("%%input"))),
+        _: repeat::<_, _, (), _, _>(0.., parse_empty_line),
         functions: repeat(0.., parse_function),
         _: repeat::<_, _, (), _, _>(0.., parse_empty_line),
         templates: repeat(1.., parse_template),
@@ -1365,6 +1408,48 @@ expected valid i64 value"#;
     }
 
     #[test]
+    fn test_parse_inputs() {
+        // Test with inputs on same line
+        let mut input = r#"%%input 3 "a" ff 1 5 "inB" ff 0 "v" bus_2 0"#;
+        let result = parse_inputs.parse_next(&mut input).unwrap();
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].name, "a");
+        assert_eq!(result[0].signal, Signal::Ff(vec![5]));
+        assert_eq!(result[1].name, "inB");
+        assert_eq!(result[1].signal, Signal::Ff(vec![]));
+        assert_eq!(result[2].name, "v");
+        assert_eq!(result[2].signal, Signal::Bus("bus_2".to_string(), vec![]));
+        assert_eq!(input, "");
+        
+        // Test with inputs on multiple lines  
+        let mut input = "%%input 3\n\"a\" ff 1 5\n\"inB\" ff 0\n\"v\" bus_2 0";
+        let result = parse_inputs.parse_next(&mut input).unwrap();
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].name, "a");
+        assert_eq!(result[0].signal, Signal::Ff(vec![5]));
+        assert_eq!(result[1].name, "inB");
+        assert_eq!(result[1].signal, Signal::Ff(vec![]));
+        assert_eq!(result[2].name, "v");
+        assert_eq!(result[2].signal, Signal::Bus("bus_2".to_string(), vec![]));
+        
+        // Test with mixed spacing and newlines
+        let mut input = "%%input 2\n  \"input1\" ff 2 3 4  \n\"input2\" bus_1 1 10";
+        let result = parse_inputs.parse_next(&mut input).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].name, "input1");
+        assert_eq!(result[0].signal, Signal::Ff(vec![3, 4]));
+        assert_eq!(result[1].name, "input2");
+        assert_eq!(result[1].signal, Signal::Bus("bus_1".to_string(), vec![10]));
+        
+        // Test with single input
+        let mut input = "%%input 1 \"single\" ff 0";
+        let result = parse_inputs.parse_next(&mut input).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "single");
+        assert_eq!(result[0].signal, Signal::Ff(vec![]));
+    }
+
+    #[test]
     fn test_template_body_i64_assignment() {
         let mut input = "x_1 = get_signal i64.2
 ;; OP(MUL)
@@ -1563,7 +1648,7 @@ set_signal i64.0 x_3
 
     #[test]
     fn test_parse_ast() {
-        let input = ";; Prime value
+        let input = r#";; Prime value
 %%prime 21888242871839275222246405745257275088548364400416034343698204186575808495617
 
 ;; Memory of signals
@@ -1581,6 +1666,10 @@ set_signal i64.0 x_3
 ;; Witness (signal list)
 %%witness 0 1 2 3
 
+;; Input signals
+%%input 1
+"a" ff 0
+
 %%template Multiplier_0 [ ff 0  ff 0 ] [ ff 0 ] [3] [ ]
 ;; store bucket. Line 15
 x_0 = get_signal i64.1
@@ -1592,7 +1681,7 @@ x_1 = get_signal i64.2
 x_0 = get_signal i64.1
 ;; end of load bucket
 x_1 = get_signal i64.2
-";
+"#;
         let want = AST {
             prime: BigUint::from_str_radix(
                 "21888242871839275222246405745257275088548364400416034343698204186575808495617",
@@ -1602,6 +1691,7 @@ x_1 = get_signal i64.2
             start: "Multiplier_0".to_string(),
             components_mode: ComponentsMode::Explicit,
             witness: vec![0, 1, 2, 3],
+            inputs: vec![Input{ name: "a".to_string(), signal: Signal::Ff(vec![]) }],
             types: vec![],
             functions: vec![],
             templates: vec![
@@ -1653,6 +1743,8 @@ x_1 = get_signal i64.2
 ;; Witness (signal list)
 %%witness 0 1 2 3
 
+%%input 0
+
 %%function f1_0 [] [ i64 0 i64 0 ff 0  ff 2 2 2]
 ;; compute bucket
 ;; load bucket
@@ -1692,6 +1784,7 @@ x_1 = get_signal i64.2
             start: "Multiplier_0".to_string(),
             components_mode: ComponentsMode::Explicit,
             witness: vec![0, 1, 2, 3],
+            inputs: vec![],
             types: vec![],
             functions: vec![
                 Function {
@@ -1803,6 +1896,7 @@ x_1 = get_signal i64.2
 %%components explicit
 ;; Witness (signal list)
 %%witness 0 1 2 3
+%%input 0
 %%template Multiplier_0 [ ff 0  ff 0 ] [ ff 0 ] [3] [ ]
 ;; store bucket. Line 15
 x_0 = get_signal i64.1
@@ -1818,6 +1912,7 @@ x_1 = get_signal i64.2
             start: "Multiplier_0".to_string(),
             components_mode: ComponentsMode::Explicit,
             witness: vec![0, 1, 2, 3],
+            inputs: vec![],
             types: vec![
                 Type {
                     name: "bus_0".to_string(),

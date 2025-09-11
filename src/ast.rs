@@ -399,6 +399,13 @@ pub enum Signal {
 
 
 #[cfg_attr(test, derive(PartialEq, Debug))]
+pub struct Input {
+    pub name: String,
+    pub signal: Signal,
+}
+
+
+#[cfg_attr(test, derive(PartialEq, Debug))]
 pub enum TypeFieldKind {
     Ff,
     Bus(String),
@@ -433,6 +440,7 @@ pub struct AST {
     pub start: String,
     pub components_mode: ComponentsMode,
     pub witness: Vec<usize>,
+    pub inputs: Vec<Input>,
     pub types: Vec<Type>,
     pub functions: Vec<Function>,
     pub templates: Vec<Template>,

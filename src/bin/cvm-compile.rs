@@ -19,27 +19,18 @@ use circom_witnesscalc::vm2::disassemble_instruction;
 struct Args {
     cvm_file: String,
     output_file: String,
-    sym_file: String,
 }
 
 #[derive(Debug, thiserror::Error)]
 enum CompilationError {
     #[error("Main template ID is not found")]
     MainTemplateIDNotFound,
-    #[error("incorrect SYM file format: `{0}`")]
-    IncorrectSymFileFormat(String),
     #[error("jump offset is too large")]
     JumpOffsetIsTooLarge,
     #[error("[assertion] Loop control stack is empty")]
     LoopControlJumpsEmpty,
     #[error("Bus type `{0}` not found in type definitions")]
     BusTypeNotFound(String),
-    #[error("Signal at index {0} not found in sym file")]
-    SignalNotFoundInSym(usize),
-    #[error("Signal '{0}' does not start with expected component prefix '{1}'")]
-    SignalPrefixMismatch(String, String),
-    #[error("Invalid array index in signal name '{0}': expected [0] but found '{1}'")]
-    InvalidArrayIndex(String, String),
 }
 
 fn parse_args() -> Args {
@@ -47,7 +38,6 @@ fn parse_args() -> Args {
     let mut output_file: Option<String> = None;
     let mut wtns_file: Option<String> = None;
     let mut inputs_file: Option<String> = None;
-    let mut sym_file: Option<String> = None;
 
     let args: Vec<String> = env::args().collect();
 
@@ -58,11 +48,10 @@ fn parse_args() -> Args {
             eprintln!();
         }
         eprintln!("USAGE:");
-        eprintln!("    {} <cvm_file> <sym_file> <output_path> [OPTIONS]", args[0]);
+        eprintln!("    {} <cvm_file> <output_path> [OPTIONS]", args[0]);
         eprintln!();
         eprintln!("ARGUMENTS:");
         eprintln!("    <cvm_file>    Path to the CVM file with compiled circuit");
-        eprintln!("    <sym_file>    Path to the SYM file with signals description");
         eprintln!("    <output_path> File where the witness will be saved");
         eprintln!();
         eprintln!("OPTIONS:");
@@ -99,8 +88,6 @@ fn parse_args() -> Args {
             usage(format!("Unknown option: {}", args[i]).as_str());
         } else if cvm_file.is_none() {
             cvm_file = Some(args[i].clone());
-        } else if sym_file.is_none() {
-            sym_file = Some(args[i].clone());
         } else if output_file.is_none() {
             output_file = Some(args[i].clone());
         }
@@ -110,7 +97,6 @@ fn parse_args() -> Args {
     Args {
         cvm_file: cvm_file.unwrap_or_else(|| { usage("missing CVM file") }),
         output_file: output_file.unwrap_or_else(|| { usage("missing output file") }),
-        sym_file: sym_file.unwrap_or_else(|| { usage("missing SYM file") }),
     }
 }
 
@@ -131,8 +117,7 @@ fn main() {
     let bn254 = BigUint::from_str_radix("21888242871839275222246405745257275088548364400416034343698204186575808495617", 10).unwrap();
     if program.prime == bn254 {
         let ff = Field::new(bn254_prime);
-        let sym_content = fs::read_to_string(&args.sym_file).unwrap();
-        let circuit = compile(&ff, &program, &sym_content).unwrap();
+        let circuit = compile(&ff, &program).unwrap();
         #[cfg(feature = "debug_vm2")]
         {
             for t in &circuit.templates {
@@ -153,150 +138,44 @@ fn main() {
     println!("Bytecode saved into {}", args.output_file);
 }
 
-#[derive(Debug)]
-struct SymEntry {
-    signal_idx: usize,
-    signal_name: String,
-}
-
-fn parse_sym_file(sym_content: &str, main_template_id: usize) -> Result<Vec<SymEntry>, Box<dyn Error>> {
-    let mut entries = Vec::new();
-
-    for line in sym_content.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-
-        let parts: Vec<&str> = line.split(',').collect();
-        if parts.len() != 4 {
-            return Err(Box::new(CompilationError::IncorrectSymFileFormat(
-                format!("line should consist of 4 values: {}", line))));
-        }
-
-        let signal_idx = parts[0].parse::<usize>()
-            .map_err(|e| Box::new(CompilationError::IncorrectSymFileFormat(
-                format!("signal_idx should be a number: {}", e))))?;
-
-        let template_id = parts[2].parse::<usize>()
-            .map_err(|e| Box::new(CompilationError::IncorrectSymFileFormat(
-                format!("template_id should be a number: {}", e))))?;
-
-        if template_id != main_template_id {
-            continue; // Only include entries for the main template
-        }
-
-        let signal_name = parts[3].to_string();
-
-        entries.push(SymEntry {
-            signal_idx,
-            signal_name,
-        });
-    }
-
-    Ok(entries)
-}
-
-/// Parse a signal name to extract the base name and validate array index
-fn parse_signal_name(name_part: &str) -> Result<String, CompilationError> {
-    // Check if there's a bracket in the name
-    if let Some(bracket_idx) = name_part.find('[') {
-        let before_bracket = &name_part[..bracket_idx];
-        let after_bracket = &name_part[bracket_idx..];
-
-        // Validate that the array index is [0]
-        if !after_bracket.starts_with("[0]") {
-            // Extract the actual bracket content for the error message
-            let closing_bracket = after_bracket.find(']').unwrap_or(after_bracket.len());
-            let bracket_content = &after_bracket[..closing_bracket + 1.min(after_bracket.len())];
-            return Err(CompilationError::InvalidArrayIndex(
-                name_part.to_string(),
-                bracket_content.to_string(),
-            ));
-        }
-
-        Ok(extract_base_name(before_bracket))
-    } else {
-        // No bracket - just extract base name before any dots
-        Ok(extract_base_name(name_part))
-    }
-}
-
-/// Extract the base name before the first dot (if any)
-fn extract_base_name(name: &str) -> String {
-    name.split('.').next().unwrap_or(name).to_string()
-}
-
-fn build_input_info_from_sym(
-    sym_content: &str,
-    main_template_id: usize,
+/// Build input info directly from AST Input nodes
+fn build_input_info(
+    inputs: &[ast::Input],
     main_template: &ast::Template,
     types: &[ast::Type],
 ) -> Result<Vec<InputInfo>, Box<dyn Error>> {
-    let sym_entries = parse_sym_file(sym_content, main_template_id)?;
-
-    let component_name_prefix = extract_component_prefix(&sym_entries)?;
-
     // Calculate the number of output signals to skip
     let outputs_count = calculate_outputs_count(&main_template.outputs, types)?;
-
+    
     let mut input_infos = Vec::new();
     let mut current_offset = outputs_count + 1; // signal #0 is always 1
-
-    // Process each input signal
-    for input in &main_template.inputs {
-        // Find the signal entry at the current offset
-        let entry = find_signal_entry(&sym_entries, current_offset)?;
-
-        // Verify signal starts with expected component prefix
-        if !entry.signal_name.starts_with(&component_name_prefix) {
-            return Err(Box::new(CompilationError::SignalPrefixMismatch(
-                entry.signal_name.clone(),
-                component_name_prefix.clone(),
-            )));
-        }
-
-        let name_part = &entry.signal_name[component_name_prefix.len()..];
-        let base_name = parse_signal_name(name_part)?;
-
-        let lengths = match input {
+    
+    // Process each input from the AST
+    for input in inputs {
+        let lengths = match &input.signal {
             ast::Signal::Ff(dims) => dims.to_vec(),
             ast::Signal::Bus(_, dims) => dims.to_vec(),
         };
-
+        
         // Create the input info
         input_infos.push(InputInfo {
-            name: base_name,
+            name: input.name.clone(),
             offset: current_offset,
             lengths,
-            type_id: match input {
+            type_id: match &input.signal {
                 ast::Signal::Ff(_) => None,
                 ast::Signal::Bus(bus_type, _) => Some(bus_type.clone()),
             },
         });
-
+        
         // Calculate signal size and advance offset
-        current_offset += calculate_signal_size(input, types)?;
+        current_offset += calculate_signal_size(&input.signal, types)?;
     }
-
+    
     Ok(input_infos)
 }
 
-/// Extract component prefix from the first sym entry
-fn extract_component_prefix(sym_entries: &[SymEntry]) -> Result<String, Box<dyn Error>> {
-    let first_entry = sym_entries.first()
-        .ok_or_else(|| Box::new(CompilationError::IncorrectSymFileFormat(
-            "No sym entries found for main template".to_string())))?;
-
-    let signal_name = &first_entry.signal_name;
-    let dot_idx = signal_name.find('.')
-        .ok_or_else(|| Box::new(CompilationError::IncorrectSymFileFormat(
-            format!("Expected signal name with component prefix, got: {}", signal_name))))?;
-
-    Ok(format!("{}.", &signal_name[..dot_idx]))
-}
-
-/// Calculate total number of output signals
+/// Calculate the total number of output signals
 fn calculate_outputs_count(outputs: &[ast::Signal], types: &[ast::Type]) -> Result<usize, Box<dyn Error>> {
     let mut count = 0;
     for signal in outputs {
@@ -319,14 +198,6 @@ fn calculate_signal_size(signal: &ast::Signal, types: &[ast::Type]) -> Result<us
         }
     }
 }
-
-/// Find signal entry at specific index
-fn find_signal_entry(sym_entries: &[SymEntry], signal_idx: usize) -> Result<&SymEntry, Box<dyn Error>> {
-    sym_entries.iter()
-        .find(|e| e.signal_idx == signal_idx)
-        .ok_or_else(|| Box::new(CompilationError::SignalNotFoundInSym(signal_idx)) as Box<dyn Error>)
-}
-
 
 fn calculate_bus_size(bus_type: &ast::Type, _all_types: &[ast::Type]) -> usize {
     let mut total_size = 0;
@@ -394,7 +265,7 @@ fn disassemble<T: FieldOps>(tf: &TF) {
 }
 
 fn compile<T: FieldOps>(
-    ff: &Field<T>, tree: &ast::AST, sym_content: &str) -> Result<Circuit<T>, Box<dyn Error>>
+    ff: &Field<T>, tree: &ast::AST) -> Result<Circuit<T>, Box<dyn Error>>
 where {
 
     // First, compile functions and build function registry
@@ -436,10 +307,10 @@ where {
     let main_template_id = main_template_id
         .ok_or(CompilationError::MainTemplateIDNotFound)?;
     
-    // Build input info from sym content
+    // Build input info from AST inputs
     let main_template = &tree.templates[main_template_id];
-    let input_infos = build_input_info_from_sym(
-        sym_content, main_template_id, main_template, &tree.types)?;
+    let input_infos = build_input_info(
+        &tree.inputs, main_template, &tree.types)?;
     
     let types: Vec<vm2::Type> = tree.types
         .iter()
@@ -1529,6 +1400,12 @@ mod tests {
 ;; Witness (signal list)
 %%witness 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 30 31 32 33 35 36
 
+;; Input signals
+%%input 3
+"a" ff 1 5
+"inB" ff 0
+"v" bus_2 0
+
 %%template Tmpl1_0 [ ff 0 ] [ ff 1 2] [3] [ ]
 x_0 = i64.0
 x_1 = get_signal i64.1
@@ -1541,51 +1418,6 @@ x_5 = get_signal i64.1
 %%template Main_2 [ ff 2 2 3 bus_1 0 ] [ ff 1 5 ff 0  bus_2 0 ] [33] [ 0 -1 0 1 ]
 x_10 = i64.2
 x_11 = get_signal i64.16
-"#;
-
-        let sym_content = r#"1,1,2,main.out[0][0]
-2,2,2,main.out[0][1]
-3,3,2,main.out[0][2]
-4,4,2,main.out[1][0]
-5,5,2,main.out[1][1]
-6,6,2,main.out[1][2]
-7,7,2,main.v2.start.x
-8,8,2,main.v2.start.y
-9,9,2,main.v2.end.x
-10,10,2,main.v2.end.y
-11,11,2,main.a[0]
-12,12,2,main.a[1]
-13,13,2,main.a[2]
-14,14,2,main.a[3]
-15,15,2,main.a[4]
-16,16,2,main.inB
-17,17,2,main.v.v[0].start.x
-18,18,2,main.v.v[0].start.y
-19,19,2,main.v.v[0].end.x
-20,20,2,main.v.v[0].end.y
-21,21,2,main.v.v[1].start.x
-22,22,2,main.v.v[1].start.y
-23,23,2,main.v.v[1].end.x
-24,24,2,main.v.v[1].end.y
-25,25,2,main.s
-26,26,2,main.s2[0]
-27,27,2,main.s2[1]
-28,-1,2,main.s2[2]
-29,-1,2,main.s2[3]
-30,28,2,main.s4[0]
-31,29,2,main.s4[1]
-32,30,2,main.s4[2]
-33,31,2,main.s4[3]
-34,-1,1,main.b.out
-35,32,1,main.b.in[0]
-36,33,1,main.b.in[1]
-37,-1,1,main.b.in[2]
-38,-1,0,main.c1[0].out
-39,-1,0,main.c1[0].in[0]
-40,-1,0,main.c1[0].in[1]
-41,-1,0,main.c1[2].out
-42,-1,0,main.c1[2].in[0]
-43,-1,0,main.c1[2].in[1]
 "#;
 
         // Parse the CVM content
@@ -1602,9 +1434,8 @@ x_11 = get_signal i64.16
         let main_template_id = main_template_id.unwrap();
 
         // Build input info
-        let input_infos = build_input_info_from_sym(
-            sym_content,
-            main_template_id,
+        let input_infos = build_input_info(
+            &program.inputs,
             &program.templates[main_template_id],
             &program.types
         ).unwrap();
@@ -1633,322 +1464,4 @@ x_11 = get_signal i64.16
 
         assert_eq!(input_infos, expected);
     }
-
-    #[test]
-    fn test_build_input_info_with_custom_component_name() {
-        // Test with a component name other than "main"
-        let sym_content = r#"1,1,2,myComponent.out[0][0]
-2,2,2,myComponent.out[0][1]
-3,3,2,myComponent.out[0][2]
-4,4,2,myComponent.out[1][0]
-5,5,2,myComponent.out[1][1]
-6,6,2,myComponent.out[1][2]
-7,7,2,myComponent.v2.start.x
-8,8,2,myComponent.v2.start.y
-9,9,2,myComponent.v2.end.x
-10,10,2,myComponent.v2.end.y
-11,11,2,myComponent.a[0]
-12,12,2,myComponent.a[1]
-13,13,2,myComponent.a[2]
-14,14,2,myComponent.a[3]
-15,15,2,myComponent.a[4]
-16,16,2,myComponent.inB
-17,17,2,myComponent.v.v[0].start.x
-18,18,2,myComponent.v.v[0].start.y
-19,19,2,myComponent.v.v[0].end.x
-20,20,2,myComponent.v.v[0].end.y
-21,21,2,myComponent.v.v[1].start.x
-22,22,2,myComponent.v.v[1].start.y
-23,23,2,myComponent.v.v[1].end.x
-24,24,2,myComponent.v.v[1].end.y
-25,25,2,myComponent.s
-26,26,2,myComponent.s2[0]
-27,27,2,myComponent.s2[1]
-28,-1,2,myComponent.s2[2]
-29,-1,2,myComponent.s2[3]
-30,28,2,myComponent.s4[0]
-31,29,2,myComponent.s4[1]
-32,30,2,myComponent.s4[2]
-33,31,2,myComponent.s4[3]
-34,-1,1,myComponent.b.out
-35,32,1,myComponent.b.in[0]
-36,33,1,myComponent.b.in[1]
-37,-1,1,myComponent.b.in[2]
-38,-1,0,myComponent.c1[0].out
-39,-1,0,myComponent.c1[0].in[0]
-40,-1,0,myComponent.c1[0].in[1]
-41,-1,0,myComponent.c1[2].out
-42,-1,0,myComponent.c1[2].in[0]
-43,-1,0,myComponent.c1[2].in[1]
-"#;
-
-        // Parse the CVM content - same as before
-        let cvm_content = r#";; Prime value
-%%prime 21888242871839275222246405745257275088548364400416034343698204186575808495617
-
-
-;; Memory of signals
-%%signals 44
-
-
-;; Heap of components
-%%components_heap 16
-
-
-;; Types (for each field we store name type offset size nDims dims)
-%%type $bus_0
-       $x $ff 0 1 0
-       $y $ff 1 1 0
-%%type $bus_1
-       $start $$bus_0 0 2 0
-       $end $$bus_0 2 2 0
-%%type $bus_2
-       $v $$bus_1 0 4 1  2
-
-
-;; Main template
-%%start Main_2
-
-
-;; Component creation mode (implicit/explicit)
-%%components implicit
-
-
-;; Witness (signal list)
-%%witness 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 30 31 32 33 35 36
-
-%%template Tmpl1_0 [ ff 0 ] [ ff 1 2] [3] [ ]
-x_0 = i64.0
-x_1 = get_signal i64.1
-
-%%template Tmpl2_1 [ ff 0 ] [ ff 1 3] [4] [ ]
-x_4 = i64.0
-x_5 = get_signal i64.1
-
-
-%%template Main_2 [ ff 2 2 3 bus_1 0 ] [ ff 1 5 ff 0  bus_2 0 ] [33] [ 0 -1 0 1 ]
-x_10 = i64.2
-x_11 = get_signal i64.16
-"#;
-
-        let program = parse(cvm_content).unwrap();
-
-        // Find the main template ID
-        let mut main_template_id = None;
-        for (i, t) in program.templates.iter().enumerate() {
-            if t.name == program.start {
-                main_template_id = Some(i);
-                break;
-            }
-        }
-        let main_template_id = main_template_id.unwrap();
-
-        // Build input info with custom component name
-        let input_infos = build_input_info_from_sym(
-            sym_content,
-            main_template_id,
-            &program.templates[main_template_id],
-            &program.types
-        ).unwrap();
-
-        // Should still get the same results - just the component name prefix changes
-        let expected = vec![
-            InputInfo {
-                name: "a".to_string(),
-                offset: 11,
-                lengths: vec![5],
-                type_id: None,
-            },
-            InputInfo {
-                name: "inB".to_string(),
-                offset: 16,
-                lengths: vec![],
-                type_id: None,
-            },
-            InputInfo {
-                name: "v".to_string(),
-                offset: 17,
-                lengths: vec![],
-                type_id: Some("bus_2".to_string()),
-            },
-        ];
-
-        assert_eq!(input_infos, expected);
-    }
-
-    #[test]
-    fn test_array_detection() {
-        // Test that we correctly reject invalid array indices (not [0])
-        let sym_content = r#"1,1,0,main.out[0]
-2,2,0,main.out[1]
-3,3,0,main.arrayInput[0]
-4,4,0,main.arrayInput[1]
-5,5,0,main.arrayInput[2]
-6,6,0,main.nonArrayInput
-7,7,0,main.busArray[0].x
-8,8,0,main.busArray[0].y
-9,9,0,main.busArray[1].x
-10,10,0,main.busArray[1].y
-11,11,0,main.notArray[5]
-12,12,0,main.regularBus.x
-13,13,0,main.regularBus.y
-"#;
-
-        let cvm_content = r#";; Prime value
-%%prime 21888242871839275222246405745257275088548364400416034343698204186575808495617
-
-;; Memory of signals
-%%signals 14
-
-;; Heap of components
-%%components_heap 1
-
-;; Types (for each field we store name type offset size nDims dims)
-%%type $bus_0
-       $x $ff 0 1 0
-       $y $ff 1 1 0
-
-;; Main template
-%%start Main_0
-
-;; Component creation mode (implicit/explicit)
-%%components implicit
-
-;; Witness (signal list)
-%%witness 0 1 2 3 4 5 6 7 8 9 10 11 12 13
-
-%%template Main_0 [ ff 1 2 ] [ ff 1 3 ff 0 bus_0 1 2 ff 0 bus_0 0 ] [14] [ ]
-x_0 = get_signal i64.1
-"#;
-
-        let program = parse(cvm_content).unwrap();
-        let main_template_id = program.templates.iter().position(|t| t.name == program.start).unwrap();
-
-        // This should fail because main.notArray[5] has invalid array index [5] instead of [0]
-        let result = build_input_info_from_sym(
-            sym_content,
-            main_template_id,
-            &program.templates[main_template_id],
-            &program.types
-        );
-
-        assert!(result.is_err());
-        if let Err(e) = result {
-            let error_message = e.to_string();
-            assert!(error_message.contains("Invalid array index in signal name 'notArray[5]': expected [0] but found '[5]'"));
-        }
-    }
-
-    #[test]
-    fn test_missing_signal_error() {
-        // Test that we get an error when a signal is missing from the sym file
-        let sym_content = r#"1,1,0,main.out[0]
-2,2,0,main.out[1]
-3,3,0,main.arrayInput[0]
-4,4,0,main.arrayInput[1]
-5,5,0,main.arrayInput[2]
-6,6,0,main.nonArrayInput
-7,7,0,main.busArray[0].x
-8,8,0,main.busArray[0].y
-9,9,0,main.busArray[1].x
-10,10,0,main.busArray[1].y
-12,12,0,main.regularBus.x
-13,13,0,main.regularBus.y
-"#;
-
-        let cvm_content = r#";; Prime value
-%%prime 21888242871839275222246405745257275088548364400416034343698204186575808495617
-
-;; Memory of signals
-%%signals 15
-
-;; Heap of components
-%%components_heap 1
-
-;; Types (for each field we store name type offset size nDims dims)
-%%type $bus_0
-       $x $ff 0 1 0
-       $y $ff 1 1 0
-
-;; Main template
-%%start Main_0
-
-;; Component creation mode (implicit/explicit)
-%%components implicit
-
-;; Witness (signal list)
-%%witness 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14
-
-%%template Main_0 [ ff 1 2 ] [ ff 1 3 ff 0 bus_0 1 2 ff 0 bus_0 0 ff 0 ] [15] [ ]
-x_0 = get_signal i64.1
-"#;
-
-        let program = parse(cvm_content).unwrap();
-        let main_template_id = program.templates.iter().position(|t| t.name == program.start).unwrap();
-
-        // This should fail because we're missing signal at index 14 (the last ff 0 input)
-        let result = build_input_info_from_sym(
-            sym_content,
-            main_template_id,
-            &program.templates[main_template_id],
-            &program.types
-        );
-
-        assert!(result.is_err());
-        if let Err(e) = result {
-            let error_message = e.to_string();
-            assert!(error_message.contains("Signal at index 11 not found in sym file"));
-        }
-    }
-
-    #[test]
-    fn test_signal_prefix_mismatch_error() {
-        // Test that we get an error when a signal doesn't have the expected component prefix
-        let sym_content = r#"1,1,0,main.out[0]
-2,2,0,main.out[1]
-3,3,0,wrongComponent.arrayInput[0]
-"#;
-
-        let cvm_content = r#";; Prime value
-%%prime 21888242871839275222246405745257275088548364400416034343698204186575808495617
-
-;; Memory of signals
-%%signals 4
-
-;; Heap of components
-%%components_heap 1
-
-;; Types (for each field we store name type offset size nDims dims)
-
-;; Main template
-%%start Main_0
-
-;; Component creation mode (implicit/explicit)
-%%components implicit
-
-;; Witness (signal list)
-%%witness 0 1 2 3
-
-%%template Main_0 [ ff 1 2 ] [ ff 1 1 ] [4] [ ]
-x_0 = get_signal i64.1
-"#;
-
-        let program = parse(cvm_content).unwrap();
-        let main_template_id = program.templates.iter().position(|t| t.name == program.start).unwrap();
-
-        // This should fail because signal at index 3 has prefix "wrongComponent" instead of "main"
-        let result = build_input_info_from_sym(
-            sym_content,
-            main_template_id,
-            &program.templates[main_template_id],
-            &program.types
-        );
-
-        assert!(result.is_err());
-        if let Err(e) = result {
-            let error_message = e.to_string();
-            assert!(error_message.contains("Signal 'wrongComponent.arrayInput[0]' does not start with expected component prefix 'main.'"));
-        }
-    }
-
 }

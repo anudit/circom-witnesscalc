@@ -101,19 +101,18 @@ function test_circuit() {
   local circuit_bytecode_path="${workdir}/${circuit_name}_bc2.wcd"
   local witness_path="${workdir}/${circuit_name}.wtns"
   local r1cs_path="${workdir}/${circuit_name}.r1cs"
-  local sym_path="${workdir}/${circuit_name}.sym"
   local cvm_path="${workdir}/${circuit_name}_cvm/${circuit_name}.cvm"
 
   pushd "$workdir" > /dev/null
 
   # Run Circom to generate assembly file.
-  time circom --r1cs --sym --cvm --wasm "${include_args[@]}" "$circuit_path"
+  time circom --r1cs --cvm --wasm "${include_args[@]}" "$circuit_path"
 
   # run commands from the project directory
   pushd "${script_dir}" > /dev/null
 
   time target/release/cvm-compile \
-    "$cvm_path" "$sym_path" "${circuit_bytecode_path}"
+    "$cvm_path" "${circuit_bytecode_path}"
 
   time target/release/calc-witness \
     "${circuit_bytecode_path}" "${inputs_path}" "${witness_path}"

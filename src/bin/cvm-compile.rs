@@ -1010,6 +1010,22 @@ where
         Statement::Assignment { name, value } => {
             compile_assignment(ctx, ff, name, value)?;
         }
+        Statement::CopyCmpInputFromSelf { cmp_idx, cmp_sig_idx, self_sig_idx, size, mode } => {
+            operand_i64(ctx, size);
+            operand_i64(ctx, self_sig_idx);
+            operand_i64(ctx, cmp_sig_idx);
+            operand_i64(ctx, cmp_idx);
+
+            let flags = match mode {
+                ast::CmpInputMode::None => 0b00u8,
+                ast::CmpInputMode::UpdateCounter => 0b01u8,
+                ast::CmpInputMode::Run => 0b10u8,
+                ast::CmpInputMode::UpdateCounterAndCheck => 0b11u8,
+            };
+
+            ctx.code.push(OpCode::CopyCmpInputsFromSelf as u8);
+            ctx.code.push(flags);
+        }
     }
     Ok(())
 }

@@ -106,7 +106,7 @@ function test_circuit() {
   pushd "$workdir" > /dev/null
 
   # Run Circom to generate assembly file.
-  time circom --r1cs --cvm --wasm "${include_args[@]}" "$circuit_path"
+  time circom --r1cs --cvm --wasm --cvm_multi_assign "${include_args[@]}" "$circuit_path"
 
   # run commands from the project directory
   pushd "${script_dir}" > /dev/null

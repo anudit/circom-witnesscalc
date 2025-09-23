@@ -267,6 +267,14 @@ pub enum CallArgument {
 }
 
 #[cfg_attr(test, derive(PartialEq, Debug))]
+pub enum CmpInputMode {
+    None,                  // do nothing with counter
+    UpdateCounter,         // update counter and don't check if needed to run the component
+    Run,                   // run the component after the input set
+    UpdateCounterAndCheck, // update the counter and check if it is time to run the component
+}
+
+#[cfg_attr(test, derive(PartialEq, Debug))]
 pub enum Statement {
     Assignment {
         name: String,
@@ -274,6 +282,13 @@ pub enum Statement {
     },
     SetSignal { idx: I64Operand, value: FfExpr },
     FfStore { idx: I64Operand, value: FfExpr },
+    CopyCmpInputFromSelf {
+        cmp_idx: I64Operand,
+        cmp_sig_idx: I64Operand,
+        self_sig_idx: I64Operand,
+        size: I64Operand,
+        mode: CmpInputMode,
+    },
     SetCmpSignalRun {
         cmp_idx: I64Operand,
         sig_idx: I64Operand,

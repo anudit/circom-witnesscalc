@@ -6,7 +6,7 @@ use winnow::combinator::{alt, preceded, repeat, terminated, seq, dispatch, fail,
 use winnow::Parser;
 use winnow::token::{literal, take_till, take_while};
 use winnow::stream::Stream;
-use crate::ast::{CallArgument, ComponentsMode, Expr, FfExpr, I64Expr, I64Operand, Signal, Statement, Template, AST, Function, Type, TypeField, TypeFieldKind, Input};
+use crate::ast::{CallArgument, ComponentsMode, CmpInputMode, Expr, FfExpr, I64Expr, I64Operand, Signal, Statement, Template, AST, Function, Type, TypeField, TypeFieldKind, Input};
 
 fn parse_prime(input: &mut &str) -> ModalResult<BigUint> {
     let (bi, ): (BigUint, ) = seq!(
@@ -569,6 +569,54 @@ fn parse_statement(input: &mut &str) -> ModalResult<Statement> {
             preceded(space1, parse_ff_expr))
             .map(
                 |(op1, op2, op3)| Statement::SetCmpInput{ cmp_idx: op1, sig_idx: op2, value: op3 }),
+        "mset_cmp_input" => (
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand))
+            .map(|(cmp_idx, cmp_sig_idx, self_sig_idx, size)| Statement::CopyCmpInputFromSelf {
+                cmp_idx,
+                cmp_sig_idx,
+                self_sig_idx,
+                size,
+                mode: CmpInputMode::None,
+            }),
+        "mset_cmp_input_cnt" => (
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand))
+            .map(|(cmp_idx, cmp_sig_idx, self_sig_idx, size)| Statement::CopyCmpInputFromSelf {
+                cmp_idx,
+                cmp_sig_idx,
+                self_sig_idx,
+                size,
+                mode: CmpInputMode::UpdateCounter,
+            }),
+        "mset_cmp_input_run" => (
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand))
+            .map(|(cmp_idx, cmp_sig_idx, self_sig_idx, size)| Statement::CopyCmpInputFromSelf {
+                cmp_idx,
+                cmp_sig_idx,
+                self_sig_idx,
+                size,
+                mode: CmpInputMode::Run,
+            }),
+        "mset_cmp_input_cnt_check" => (
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand))
+            .map(|(cmp_idx, cmp_sig_idx, self_sig_idx, size)| Statement::CopyCmpInputFromSelf {
+                cmp_idx,
+                cmp_sig_idx,
+                self_sig_idx,
+                size,
+                mode: CmpInputMode::UpdateCounterAndCheck,
+            }),
         "error" => preceded(space1, parse_i64_operand)
             .map(|op1| Statement::Error{ code: op1 }),
         "loop" => {
@@ -633,7 +681,7 @@ fn parse_statement(input: &mut &str) -> ModalResult<Statement> {
 
     // For set_signal, ff.store, set_cmp_input_run, error, ff.mreturn, and ff.mcall, we need to parse the line end
     match &s {
-        Statement::SetSignal { .. } | Statement::FfStore { .. } | Statement::SetCmpSignalRun { .. } | Statement::SetCmpInputCnt { .. } | Statement::SetCmpInputCntCheck { .. } | Statement::Error { .. } | Statement::FfMReturn { .. } | Statement::FfReturn { .. } | Statement::FfMCall { .. } => {
+        Statement::SetSignal { .. } | Statement::FfStore { .. } | Statement::SetCmpSignalRun { .. } | Statement::SetCmpInputCnt { .. } | Statement::SetCmpInputCntCheck { .. } | Statement::CopyCmpInputFromSelf { .. } | Statement::Error { .. } | Statement::FfMReturn { .. } | Statement::FfReturn { .. } | Statement::FfMCall { .. } => {
             (space0, opt(parse_eol_comment), parse_line_end).parse_next(input)?;
         }
         _ => {}
@@ -1352,6 +1400,55 @@ x";
         let a = parse_statement.parse_next(&mut input).unwrap();
         assert_eq!(a, want);
         assert_eq!("x", input);
+    }
+
+    #[test]
+    fn test_parse_mset_cmp_input_variants() {
+        let input = "mset_cmp_input i64.1 i64.2 i64.3 i64.4";
+        let want = Statement::CopyCmpInputFromSelf {
+            cmp_idx: i64_op("1"),
+            cmp_sig_idx: i64_op("2"),
+            self_sig_idx: i64_op("3"),
+            size: i64_op("4"),
+            mode: CmpInputMode::None,
+        };
+        let statement = parse_statement.parse(input).unwrap();
+        assert_eq!(statement, want);
+
+        let mut input = "mset_cmp_input_cnt i64.10 i64.11 i64.12 size_var ;; comment
+rest";
+        let want = Statement::CopyCmpInputFromSelf {
+            cmp_idx: i64_op("10"),
+            cmp_sig_idx: i64_op("11"),
+            self_sig_idx: i64_op("12"),
+            size: i64_op("size_var"),
+            mode: CmpInputMode::UpdateCounter,
+        };
+        let statement = parse_statement.parse_next(&mut input).unwrap();
+        assert_eq!(statement, want);
+        assert_eq!(input, "rest");
+
+        let input = "mset_cmp_input_run cmp_idx sig_idx self_idx i64.8";
+        let want = Statement::CopyCmpInputFromSelf {
+            cmp_idx: i64_op("cmp_idx"),
+            cmp_sig_idx: i64_op("sig_idx"),
+            self_sig_idx: i64_op("self_idx"),
+            size: i64_op("8"),
+            mode: CmpInputMode::Run,
+        };
+        let statement = parse_statement.parse(input).unwrap();
+        assert_eq!(statement, want);
+
+        let input = "mset_cmp_input_cnt_check i64.1 cmp_sig self_sig i64.16";
+        let want = Statement::CopyCmpInputFromSelf {
+            cmp_idx: i64_op("1"),
+            cmp_sig_idx: i64_op("cmp_sig"),
+            self_sig_idx: i64_op("self_sig"),
+            size: i64_op("16"),
+            mode: CmpInputMode::UpdateCounterAndCheck,
+        };
+        let statement = parse_statement.parse(input).unwrap();
+        assert_eq!(statement, want);
     }
 
     #[test]

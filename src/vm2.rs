@@ -226,6 +226,13 @@ pub enum OpCode {
     //   -2: self-source signal index
     //   -3: number of signals to copy
     CopyCmpInputsFromSelf = 55,
+    // Copy signals from a component to the current component by index
+    // stack_i64:
+    //    0: destination signal index within current component
+    //   -1: source component index
+    //   -2: source component signal index
+    //   -3: number of signals to copy
+    CopySignalFromCmp = 57,
 }
 
 pub struct Component {
@@ -1216,6 +1223,9 @@ where
         OpCode::CopyCmpInputsFromSelf => {
             output.push_str("CopyCmpInputsFromSelf");
         }
+        OpCode::CopySignalFromCmp => {
+            output.push_str("CopySignalFromCmp");
+        }
     }
 
     (ip, output)
@@ -2179,6 +2189,58 @@ where
                                     cmp_idx);
                             }
                             execute(circuit, signals, ff, component)?;
+                        }
+                    }
+                }
+            }
+            OpCode::CopySignalFromCmp => {
+                let dst_idx = vm.pop_usize()?;
+                let cmp_idx = vm.pop_usize()?;
+                let cmp_sig_idx = vm.pop_usize()?;
+                let num_signals = vm.pop_usize()?;
+
+                let self_signals_start = component_tree.signals_start;
+
+                match component_tree.components[cmp_idx] {
+                    None => {
+                        return Err(Box::new(RuntimeError::UninitializedComponent));
+                    }
+                    Some(ref component) => {
+                        let component_signals_start = component.signals_start;
+                        for offset in 0..num_signals {
+                            let src_idx = component_signals_start + cmp_sig_idx + offset;
+                            let dst_idx_global = self_signals_start + dst_idx + offset;
+                            let value = match signals.get(src_idx) {
+                                Some(Some(v)) => *v,
+                                Some(None) => {
+                                    return Err(Box::new(RuntimeError::SignalIsNotSet));
+                                }
+                                None => {
+                                    return Err(Box::new(RuntimeError::SignalIndexOutOfBounds));
+                                }
+                            };
+                            let dst_slot = match signals.get_mut(dst_idx_global) {
+                                Some(slot) => slot,
+                                None => {
+                                    return Err(Box::new(RuntimeError::SignalIndexOutOfBounds));
+                                }
+                            };
+                            if dst_slot.is_some() {
+                                return Err(Box::new(RuntimeError::SignalIsAlreadySet));
+                            }
+                            *dst_slot = Some(value);
+
+                            #[cfg(feature = "debug_vm2")]
+                            {
+                                println!(
+                                    "CopySignalFromCmp [S{} -> S{}]: cmp {} sig {} = {}",
+                                    src_idx,
+                                    dst_idx_global,
+                                    cmp_idx,
+                                    cmp_sig_idx + offset,
+                                    value,
+                                );
+                            }
                         }
                     }
                 }

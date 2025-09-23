@@ -287,6 +287,12 @@ pub enum Statement {
         src: I64Operand,
         size: I64Operand,
     },
+    CopySignalFromCmp {
+        dst_idx: I64Operand,
+        cmp_idx: I64Operand,
+        cmp_sig_idx: I64Operand,
+        size: I64Operand,
+    },
     CopyCmpInputFromSelf {
         cmp_idx: I64Operand,
         cmp_sig_idx: I64Operand,

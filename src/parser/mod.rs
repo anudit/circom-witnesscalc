@@ -617,6 +617,17 @@ fn parse_statement(input: &mut &str) -> ModalResult<Statement> {
                 size,
                 mode: CmpInputMode::UpdateCounterAndCheck,
             }),
+        "mset_signal_from_cmp" => (
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand))
+            .map(|(dst_idx, cmp_idx, cmp_sig_idx, size)| Statement::CopySignalFromCmp {
+                dst_idx,
+                cmp_idx,
+                cmp_sig_idx,
+                size,
+            }),
         "error" => preceded(space1, parse_i64_operand)
             .map(|op1| Statement::Error{ code: op1 }),
         "loop" => {
@@ -687,7 +698,7 @@ fn parse_statement(input: &mut &str) -> ModalResult<Statement> {
 
     // For set_signal, ff.store, set_cmp_input_run, error, ff.mreturn, and ff.mcall, we need to parse the line end
     match &s {
-        Statement::SetSignal { .. } | Statement::FfStore { .. } | Statement::SetCmpSignalRun { .. } | Statement::SetCmpInputCnt { .. } | Statement::SetCmpInputCntCheck { .. } | Statement::CopyCmpInputFromSelf { .. } | Statement::Error { .. } | Statement::FfMReturn { .. } | Statement::FfMStore { .. } | Statement::FfReturn { .. } | Statement::FfMCall { .. } => {
+        Statement::SetSignal { .. } | Statement::FfStore { .. } | Statement::SetCmpSignalRun { .. } | Statement::SetCmpInputCnt { .. } | Statement::SetCmpInputCntCheck { .. } | Statement::CopyCmpInputFromSelf { .. } | Statement::CopySignalFromCmp { .. } | Statement::Error { .. } | Statement::FfMReturn { .. } | Statement::FfMStore { .. } | Statement::FfReturn { .. } | Statement::FfMCall { .. } => {
             (space0, opt(parse_eol_comment), parse_line_end).parse_next(input)?;
         }
         _ => {}
@@ -1455,6 +1466,41 @@ rest";
         };
         let statement = parse_statement.parse(input).unwrap();
         assert_eq!(statement, want);
+    }
+
+    #[test]
+    fn test_parse_mset_signal_from_cmp() {
+        let input = "mset_signal_from_cmp i64.7 i64.2 i64.3 i64.4";
+        let want = Statement::CopySignalFromCmp {
+            dst_idx: i64_op("7"),
+            cmp_idx: i64_op("2"),
+            cmp_sig_idx: i64_op("3"),
+            size: i64_op("4"),
+        };
+        let statement = parse_statement.parse(input).unwrap();
+        assert_eq!(statement, want);
+
+        let input = "mset_signal_from_cmp dst_var cmp_idx cmp_sig size_var";
+        let want = Statement::CopySignalFromCmp {
+            dst_idx: i64_op("dst_var"),
+            cmp_idx: i64_op("cmp_idx"),
+            cmp_sig_idx: i64_op("cmp_sig"),
+            size: i64_op("size_var"),
+        };
+        let statement = parse_statement.parse(input).unwrap();
+        assert_eq!(statement, want);
+
+        let mut input = "mset_signal_from_cmp d i64.5 s i64.8 ;; comment
+rest";
+        let want = Statement::CopySignalFromCmp {
+            dst_idx: i64_op("d"),
+            cmp_idx: i64_op("5"),
+            cmp_sig_idx: i64_op("s"),
+            size: i64_op("8"),
+        };
+        let statement = parse_statement.parse_next(&mut input).unwrap();
+        assert_eq!(statement, want);
+        assert_eq!(input, "rest");
     }
 
     #[test]

@@ -813,6 +813,13 @@ where
             operand_i64(ctx, size);
             ctx.code.push(OpCode::FfMStore as u8);
         },
+        Statement::CopySignalFromCmp { dst_idx, cmp_idx, cmp_sig_idx, size } => {
+            operand_i64(ctx, size);
+            operand_i64(ctx, cmp_sig_idx);
+            operand_i64(ctx, cmp_idx);
+            operand_i64(ctx, dst_idx);
+            ctx.code.push(OpCode::CopySignalFromCmp as u8);
+        },
         Statement::SetCmpSignalRun { cmp_idx, sig_idx, value } => {
             operand_i64(ctx, cmp_idx);
             operand_i64(ctx, sig_idx);

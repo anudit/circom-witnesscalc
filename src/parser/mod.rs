@@ -657,6 +657,12 @@ fn parse_statement(input: &mut &str) -> ModalResult<Statement> {
             preceded(space1, parse_i64_operand))
             .map(
                 |(op1, op2, op3)| Statement::FfMReturn{ dst: op1, src: op2, size: op3 }),
+        "ff.mstore" => (
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand))
+            .map(
+                |(dst, src, size)| Statement::FfMStore { dst, src, size }),
         "ff.return" => preceded(space1, parse_ff_expression)
             .map(|value| Statement::FfReturn { value }),
         "ff.mcall" => {
@@ -681,7 +687,7 @@ fn parse_statement(input: &mut &str) -> ModalResult<Statement> {
 
     // For set_signal, ff.store, set_cmp_input_run, error, ff.mreturn, and ff.mcall, we need to parse the line end
     match &s {
-        Statement::SetSignal { .. } | Statement::FfStore { .. } | Statement::SetCmpSignalRun { .. } | Statement::SetCmpInputCnt { .. } | Statement::SetCmpInputCntCheck { .. } | Statement::CopyCmpInputFromSelf { .. } | Statement::Error { .. } | Statement::FfMReturn { .. } | Statement::FfReturn { .. } | Statement::FfMCall { .. } => {
+        Statement::SetSignal { .. } | Statement::FfStore { .. } | Statement::SetCmpSignalRun { .. } | Statement::SetCmpInputCnt { .. } | Statement::SetCmpInputCntCheck { .. } | Statement::CopyCmpInputFromSelf { .. } | Statement::Error { .. } | Statement::FfMReturn { .. } | Statement::FfMStore { .. } | Statement::FfReturn { .. } | Statement::FfMCall { .. } => {
             (space0, opt(parse_eol_comment), parse_line_end).parse_next(input)?;
         }
         _ => {}
@@ -2224,6 +2230,41 @@ x";
         let statement = parse_statement.parse_next(&mut input).unwrap();
         assert_eq!(statement, want);
         assert_eq!("x", input);
+    }
+
+    #[test]
+    fn test_parse_ff_mstore() {
+        // Test with literal operands
+        let input = "ff.mstore i64.5 i64.1 i64.3";
+        let want = Statement::FfMStore {
+            dst: I64Operand::Literal(5),
+            src: I64Operand::Literal(1),
+            size: I64Operand::Literal(3),
+        };
+        let statement = parse_statement.parse(input).unwrap();
+        assert_eq!(statement, want);
+
+        // Test with variable operands
+        let input = "ff.mstore x_dst x_src x_size";
+        let want = Statement::FfMStore {
+            dst: I64Operand::Variable("x_dst".to_string()),
+            src: I64Operand::Variable("x_src".to_string()),
+            size: I64Operand::Variable("x_size".to_string()),
+        };
+        let statement = parse_statement.parse(input).unwrap();
+        assert_eq!(statement, want);
+
+        // Test with mixed operands and trailing comment
+        let mut input = "ff.mstore x_dst i64.12 x_sz ;; copy block
+z";
+        let want = Statement::FfMStore {
+            dst: I64Operand::Variable("x_dst".to_string()),
+            src: I64Operand::Literal(12),
+            size: I64Operand::Variable("x_sz".to_string()),
+        };
+        let statement = parse_statement.parse_next(&mut input).unwrap();
+        assert_eq!(statement, want);
+        assert_eq!("z", input);
     }
 
     #[test]

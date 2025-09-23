@@ -91,6 +91,7 @@ pub enum OpCode {
     // stack_ff:0 contains the value to store
     // stack_i64:0 contains the memory address
     FfStore              = 28,
+    FfMStore             = 56,
     // Memory load operation (ff.load)
     // stack_i64:0 contains the memory address
     // Result pushed to stack_ff
@@ -998,6 +999,9 @@ where
         OpCode::FfMReturn => {
             output.push_str("FfMReturn");
         }
+        OpCode::FfMStore => {
+            output.push_str("FfMStore");
+        }
         OpCode::FfMCall => {
             // Read function index
             let func_idx = u32::from_le_bytes((&code[ip..ip+4]).try_into().unwrap());
@@ -1708,6 +1712,45 @@ where
                 #[cfg(not(feature = "debug_vm2"))]
                 {
                     code = get_current_context(&vm, circuit, component_tree);
+                }
+            }
+            OpCode::FfMStore => {
+                let size = vm.pop_usize()?;
+                let src_addr = vm.pop_usize()?;
+                let dst_addr = vm.pop_usize()?;
+
+                let dst_start = dst_addr.checked_add(vm.memory_base_pointer_ff)
+                    .ok_or(RuntimeError::MemoryAddressOutOfBounds)?;
+                let src_start = src_addr.checked_add(vm.memory_base_pointer_ff)
+                    .ok_or(RuntimeError::MemoryAddressOutOfBounds)?;
+
+                for offset in 0..size {
+                    let src_idx = src_start.checked_add(offset)
+                        .ok_or(RuntimeError::MemoryAddressOutOfBounds)?;
+                    let dst_idx = dst_start.checked_add(offset)
+                        .ok_or(RuntimeError::MemoryAddressOutOfBounds)?;
+
+                    if src_idx >= vm.memory_ff.len() {
+                        return Err(Box::new(RuntimeError::MemoryAddressOutOfBounds));
+                    }
+                    let value = *vm.memory_ff.get(src_idx)
+                        .and_then(|v| v.as_ref())
+                        .ok_or(RuntimeError::MemoryVariableIsNotSet)?;
+
+                    if dst_idx >= vm.memory_ff.len() {
+                        vm.memory_ff.resize(dst_idx + 1, None);
+                    }
+                    vm.memory_ff[dst_idx] = Some(value);
+                }
+
+                #[cfg(feature = "debug_vm2")]
+                {
+                    println!(
+                        "FfMStore: copied {} elements from [{}] to [{}]",
+                        size,
+                        src_start,
+                        dst_start,
+                    );
                 }
             }
             OpCode::FfMCall => {

@@ -282,6 +282,11 @@ pub enum Statement {
     },
     SetSignal { idx: I64Operand, value: FfExpr },
     FfStore { idx: I64Operand, value: FfExpr },
+    FfMStore {
+        dst: I64Operand,
+        src: I64Operand,
+        size: I64Operand,
+    },
     CopyCmpInputFromSelf {
         cmp_idx: I64Operand,
         cmp_sig_idx: I64Operand,

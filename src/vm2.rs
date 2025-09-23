@@ -233,6 +233,12 @@ pub enum OpCode {
     //   -2: source component signal index
     //   -3: number of signals to copy
     CopySignalFromCmp = 57,
+    // Copy signals from FF memory to the current component's signal range
+    // stack_i64:
+    //    0: destination signal index within current component
+    //   -1: memory address (relative to current FF memory base)
+    //   -2: number of signals to copy
+    CopySignalFromMemory = 58,
 }
 
 pub struct Component {
@@ -1225,6 +1231,9 @@ where
         }
         OpCode::CopySignalFromCmp => {
             output.push_str("CopySignalFromCmp");
+        }
+        OpCode::CopySignalFromMemory => {
+            output.push_str("CopySignalFromMemory");
         }
     }
 
@@ -2242,6 +2251,55 @@ where
                                 );
                             }
                         }
+                    }
+                }
+            }
+            OpCode::CopySignalFromMemory => {
+                let dst_idx = vm.pop_usize()?;
+                let addr = vm.pop_usize()?;
+                let num_signals = vm.pop_usize()?;
+
+                let self_signals_start = component_tree.signals_start;
+                let dst_start = self_signals_start
+                    .checked_add(dst_idx)
+                    .ok_or(RuntimeError::SignalIndexOutOfBounds)?;
+
+                let memory_start = vm.memory_base_pointer_ff
+                    .checked_add(addr)
+                    .ok_or(RuntimeError::MemoryAddressOutOfBounds)?;
+
+                for offset in 0..num_signals {
+                    let src_idx = memory_start
+                        .checked_add(offset)
+                        .ok_or(RuntimeError::MemoryAddressOutOfBounds)?;
+                    if src_idx >= vm.memory_ff.len() {
+                        return Err(Box::new(RuntimeError::MemoryAddressOutOfBounds));
+                    }
+                    let value = vm.memory_ff.get(src_idx)
+                        .and_then(|v| v.as_ref())
+                        .ok_or(RuntimeError::MemoryVariableIsNotSet)?;
+
+                    let dst_idx_global = dst_start
+                        .checked_add(offset)
+                        .ok_or(RuntimeError::SignalIndexOutOfBounds)?;
+                    if dst_idx_global >= signals.len() {
+                        return Err(Box::new(RuntimeError::SignalIndexOutOfBounds));
+                    }
+                    let dst_slot = signals.get_mut(dst_idx_global)
+                        .ok_or(RuntimeError::SignalIndexOutOfBounds)?;
+                    if dst_slot.is_some() {
+                        return Err(Box::new(RuntimeError::SignalIsAlreadySet));
+                    }
+                    *dst_slot = Some(*value);
+
+                    #[cfg(feature = "debug_vm2")]
+                    {
+                        println!(
+                            "CopySignalFromMemory [M{} -> S{}]: value = {}",
+                            src_idx,
+                            dst_idx_global,
+                            value,
+                        );
                     }
                 }
             }

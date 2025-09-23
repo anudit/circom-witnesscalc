@@ -837,6 +837,12 @@ where
             operand_i64(ctx, dst_idx);
             ctx.code.push(OpCode::CopySignalFromCmp as u8);
         },
+        Statement::CopySignal { dst_idx, src_idx, size } => {
+            operand_i64(ctx, size);
+            operand_i64(ctx, src_idx);
+            operand_i64(ctx, dst_idx);
+            ctx.code.push(OpCode::CopySignal as u8);
+        },
         Statement::CopySignalFromMemory { dst_idx, addr, size } => {
             operand_i64(ctx, size);
             operand_i64(ctx, addr);

@@ -293,6 +293,11 @@ pub enum Statement {
         cmp_sig_idx: I64Operand,
         size: I64Operand,
     },
+    CopySignal {
+        dst_idx: I64Operand,
+        src_idx: I64Operand,
+        size: I64Operand,
+    },
     CopySignalFromMemory {
         dst_idx: I64Operand,
         addr: I64Operand,

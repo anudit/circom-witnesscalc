@@ -237,6 +237,12 @@ pub enum OpCode {
     //   -3: source component signal index
     //   -4: number of signals to copy
     CopyCmpInputsFromCmp = 59,
+    // Copy signals inside the current component by index
+    // stack_i64:
+    //    0: destination signal index within current component
+    //   -1: source signal index within current component
+    //   -2: number of signals to copy
+    CopySignal = 60,
     // Copy signals from a component to the current component by index
     // stack_i64:
     //    0: destination signal index within current component
@@ -1242,6 +1248,9 @@ where
         }
         OpCode::CopyCmpInputsFromCmp => {
             output.push_str("CopyCmpInputsFromCmp");
+        }
+        OpCode::CopySignal => {
+            output.push_str("CopySignal");
         }
         OpCode::CopySignalFromCmp => {
             output.push_str("CopySignalFromCmp");
@@ -2321,6 +2330,51 @@ where
                             }
                             execute(circuit, signals, ff, component)?;
                         }
+                    }
+                }
+            }
+            OpCode::CopySignal => {
+                let dst_idx = vm.pop_usize()?;
+                let src_idx = vm.pop_usize()?;
+                let num_signals = vm.pop_usize()?;
+
+                let self_signals_start = component_tree.signals_start;
+
+                for offset in 0..num_signals {
+                    let src_global = self_signals_start + src_idx + offset;
+                    let dst_global = self_signals_start + dst_idx + offset;
+
+                    let value = match signals.get(src_global) {
+                        Some(Some(v)) => *v,
+                        Some(None) => {
+                            return Err(Box::new(RuntimeError::SignalIsNotSet));
+                        }
+                        None => {
+                            return Err(Box::new(RuntimeError::SignalIndexOutOfBounds));
+                        }
+                    };
+
+                    let dst_slot = match signals.get_mut(dst_global) {
+                        Some(slot) => slot,
+                        None => {
+                            return Err(Box::new(RuntimeError::SignalIndexOutOfBounds));
+                        }
+                    };
+
+                    if dst_slot.is_some() {
+                        return Err(Box::new(RuntimeError::SignalIsAlreadySet));
+                    }
+
+                    *dst_slot = Some(value);
+
+                    #[cfg(feature = "debug_vm2")]
+                    {
+                        println!(
+                            "CopySignal [S{} -> S{}] = {}",
+                            src_global,
+                            dst_global,
+                            value
+                        );
                     }
                 }
             }

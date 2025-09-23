@@ -813,6 +813,23 @@ where
             operand_i64(ctx, size);
             ctx.code.push(OpCode::FfMStore as u8);
         },
+        Statement::CopyCmpInputFromCmp { dst_cmp_idx, dst_sig_idx, src_cmp_idx, src_sig_idx, size, mode } => {
+            operand_i64(ctx, size);
+            operand_i64(ctx, src_sig_idx);
+            operand_i64(ctx, src_cmp_idx);
+            operand_i64(ctx, dst_sig_idx);
+            operand_i64(ctx, dst_cmp_idx);
+
+            let flags = match mode {
+                ast::CmpInputMode::None => 0b00u8,
+                ast::CmpInputMode::UpdateCounter => 0b01u8,
+                ast::CmpInputMode::Run => 0b10u8,
+                ast::CmpInputMode::UpdateCounterAndCheck => 0b11u8,
+            };
+
+            ctx.code.push(OpCode::CopyCmpInputsFromCmp as u8);
+            ctx.code.push(flags);
+        },
         Statement::CopySignalFromCmp { dst_idx, cmp_idx, cmp_sig_idx, size } => {
             operand_i64(ctx, size);
             operand_i64(ctx, cmp_sig_idx);

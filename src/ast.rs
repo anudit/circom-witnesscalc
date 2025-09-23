@@ -305,6 +305,14 @@ pub enum Statement {
         size: I64Operand,
         mode: CmpInputMode,
     },
+    CopyCmpInputFromCmp {
+        dst_cmp_idx: I64Operand,
+        dst_sig_idx: I64Operand,
+        src_cmp_idx: I64Operand,
+        src_sig_idx: I64Operand,
+        size: I64Operand,
+        mode: CmpInputMode,
+    },
     SetCmpSignalRun {
         cmp_idx: I64Operand,
         sig_idx: I64Operand,

@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 use std::error::Error;
+use bitvec::order::Lsb0;
+use bitvec::vec::BitVec;
 use crate::field::{Field, FieldOperations, FieldOps};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -258,11 +260,56 @@ pub enum OpCode {
     CopySignalFromMemory = 58,
 }
 
-pub struct Component {
+pub struct Signals<T: FieldOps> {
+    present: BitVec,
+    signals: Vec<T>,
+}
+
+impl <T: FieldOps> Signals<T> {
+    pub fn new(n: usize) -> Signals<T> {
+        Signals {
+            present: BitVec::<usize, Lsb0>::repeat(false, n),
+            signals: vec![T::zero(); n],
+        }
+    }
+
+    pub fn set(&mut self, idx: usize, val: T) -> Result<(), Box<dyn Error>> {
+        match self.signals.get_mut(idx) {
+            Some(slot) => {
+                if self.present[idx] {
+                    return Err(Box::new(RuntimeError::SignalIsAlreadySet));
+                }
+                self.present.set(idx, true);
+                *slot = val;
+                Ok(())
+            }
+            None => {
+                Err(Box::new(RuntimeError::SignalIndexOutOfBounds))
+            }
+        }
+    }
+
+    pub fn get(&self, idx: usize) -> Result<T, Box<dyn Error>> {
+        match self.signals.get(idx) {
+            None => {
+                Err(Box::new(RuntimeError::SignalIndexOutOfBounds))
+            }
+            Some(s) => {
+                if !self.present[idx] {
+                    return Err(Box::new(RuntimeError::SignalIsNotSet))
+                }
+                Ok(*s)
+            }
+        }
+    }
+}
+
+pub struct Component<T: FieldOps> {
     pub signals_start: usize,
     pub template_id: usize,
-    pub components: Vec<Option<Box<Component>>>,
+    pub components: Vec<Option<Box<Component<T>>>>,
     pub number_of_inputs: usize,
+    pub signals: Signals<T>,
 }
 
 pub struct Circuit<T: FieldOps> {
@@ -508,7 +555,7 @@ fn calculate_args_size<T: FieldOps>(code: &[u8], arg_count: u8) -> Result<usize,
 // Helper function to process function arguments
 fn process_function_arguments<T: FieldOps>(
     vm: &mut VM<T>, signals: &[Option<T>], code: &[u8], arg_count: u8,
-    component_tree: &Component) -> Result<(), RuntimeError> {
+    component_tree: &Component<T>) -> Result<(), RuntimeError> {
 
     let mut offset = 0;
     let mut ff_arg_idx = 0;
@@ -1280,7 +1327,7 @@ where
 fn get_current_context<'a, T: FieldOps>(
     vm: &VM<T>,
     circuit: &'a Circuit<T>,
-    component_tree: &Component,
+    component_tree: &Component<T>,
 ) -> (&'a [u8], &'a str, &'a HashMap<usize, String>, &'a HashMap<usize, String>) {
     match vm.current_execution_context {
         ExecutionContext::Template => (
@@ -1302,7 +1349,7 @@ fn get_current_context<'a, T: FieldOps>(
 fn get_current_context<'a, T: FieldOps>(
     vm: &VM<T>,
     circuit: &'a Circuit<T>,
-    component_tree: &Component,
+    component_tree: &Component<T>,
 ) -> &'a [u8] {
     match vm.current_execution_context {
         ExecutionContext::Template =>
@@ -1314,7 +1361,7 @@ fn get_current_context<'a, T: FieldOps>(
 
 pub fn execute<F, T: FieldOps>(
     circuit: &Circuit<T>, signals: &mut [Option<T>], ff: &F,
-    component_tree: &mut Component) -> Result<(), Box<dyn Error>>
+    component_tree: &mut Component<T>) -> Result<(), Box<dyn Error>>
 where
     for <'a> &'a F: FieldOperations<Type = T> {
 
@@ -2539,8 +2586,20 @@ impl TypeField {
 
 #[cfg(test)]
 mod tests {
+    // use bitvec::vec::BitVec;
+    use bitvec::prelude::*;
+
     #[test]
     fn test_ok() {
+        let mut x = BitVec::<usize, Lsb0>::repeat(false, 100500);
+
+        println!("{:?}", x[4000]);
+        println!("{:?}", x[4001]);
+
+        x.set(4000, true);
+        println!("{:?}", x[4000]);
+
+        println!("{:?}", x[4001]);
         println!("OK");
     }
 }

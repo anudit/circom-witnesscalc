@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use crate::field::{FieldOperations, FieldOps};
-use crate::vm2::{Component, InputInfo, Template, Type, TypeFieldKind};
+use crate::vm2::{Component, InputInfo, Signals, Template, Type, TypeFieldKind};
 
 /// Initialize signals array with input values from JSON
 pub fn init_signals<T: FieldOps, F>(
@@ -63,17 +63,17 @@ where
 }
 
 /// Build the component tree for VM2 execution
-pub fn build_component_tree(
-    main_template_id: usize, vm_templates: &[Template]) -> Component {
+pub fn build_component_tree<T: FieldOps>(
+    main_template_id: usize, vm_templates: &[Template]) -> Component<T> {
 
     create_component(main_template_id, 1, vm_templates).0
 }
 
 /// Create a component tree and returns the component and the number of signals
 /// of self and all its children
-fn create_component(
+fn create_component<T: FieldOps>(
     template_id: usize,
-    signals_start: usize, vm_templates: &[Template]) -> (Component, usize) {
+    signals_start: usize, vm_templates: &[Template]) -> (Component<T>, usize) {
 
     let t = &vm_templates[template_id];
     let mut next_signal_start = signals_start + t.signals_num;
@@ -95,6 +95,7 @@ fn create_component(
             template_id,
             components,
             number_of_inputs: t.number_of_inputs,
+            signals: Signals::new(t.signals_num),
         },
         next_signal_start - signals_start
     )
@@ -324,14 +325,14 @@ where
 
 /// Debug helper to print the entire component tree
 #[cfg(feature = "debug_vm2")]
-pub fn debug_component_tree(component: &Component, templates: &[Template]) {
+pub fn debug_component_tree<T: FieldOps>(component: &Component<T>, templates: &[Template]) {
     println!("\n=== Component Tree ===");
     print_component_tree(component, templates, 0);
     println!("===================\n");
 }
 
 #[cfg(feature = "debug_vm2")]
-fn print_component_tree(component: &Component, templates: &[Template], indent: usize) {
+fn print_component_tree<T: FieldOps>(component: &Component<T>, templates: &[Template], indent: usize) {
     let indent_str = "  ".repeat(indent);
     let template_name = &templates[component.template_id].name;
 
@@ -473,7 +474,7 @@ mod tests {
             template7];
 
         // Build component tree with template7 (Root) as the main template
-        let component_tree = build_component_tree(6, &vm_templates);
+        let component_tree: Component<U254> = build_component_tree(6, &vm_templates);
 
         // Verify the structure of the root component
         assert_eq!(component_tree.signals_start, 1);

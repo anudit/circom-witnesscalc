@@ -47,7 +47,7 @@ bitvec = "1.0.1"
 opt-level = 3
 lto = "fat"
 codegen-units = 1
-# debug = true
+#debug = true
 
 [lib]
 crate-type = ["lib", "staticlib", "cdylib"]

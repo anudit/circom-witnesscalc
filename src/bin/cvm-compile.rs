@@ -7,10 +7,8 @@ use std::time::Instant;
 use num_bigint::BigUint;
 use num_traits::{Num, ToBytes};
 use circom_witnesscalc::{ast, calculate_witness_vm2, vm2};
-use circom_witnesscalc::ast::{Expr, FfExpr, I64Expr, I64Operand, Statement};
+use circom_witnesscalc::ast::{Expr, FfExpr, I64Expr, I64Operand, Statement, AST};
 use circom_witnesscalc::field::{bn254_prime, Field, FieldOperations, FieldOps};
-#[cfg(feature = "debug_vm2")]
-use circom_witnesscalc::field::U254;
 use circom_witnesscalc::parser::parse;
 use circom_witnesscalc::storage::serialize_witnesscalc_vm2;
 use circom_witnesscalc::vm2::{Circuit, OpCode, InputInfo};
@@ -114,15 +112,14 @@ fn parse_args() -> Args {
 
     Args {
         cvm_file: cvm_file.unwrap_or_else(|| { usage("missing CVM file") }),
-        output_file: output_file,
-        wtns_file: wtns_file,
-        inputs_file: inputs_file,
+        output_file,
+        wtns_file,
+        inputs_file,
     }
 }
 
 fn main() {
     let args = parse_args();
-
     let program_text = fs::read_to_string(&args.cvm_file).unwrap();
     let program = match parse(&program_text) {
         Ok(p) => p,
@@ -132,52 +129,58 @@ fn main() {
         }
     };
 
-    let mut bytecode_buf: Vec<u8> = Vec::new();
-    let mut witness_buf: Vec<u8> = Vec::new();
-
     let bn254 = BigUint::from_str_radix("21888242871839275222246405745257275088548364400416034343698204186575808495617", 10).unwrap();
     if program.prime == bn254 {
         let ff = Field::new(bn254_prime);
-
-        let start = Instant::now();
-        let circuit = compile(&ff, &program).unwrap();
-        println!("Circuit compiled in: {:?}", start.elapsed());
-
-        #[cfg(feature = "debug_vm2")]
-        {
-            for t in &circuit.templates {
-                disassemble::<U254>(&TF::T(t))
-            }
-            for f in &circuit.functions {
-                disassemble::<U254>(&TF::F(f))
-            }
-        }
-
-        if let Some(ref inputs_file) = args.inputs_file {
-            let inputs_reader = File::open(inputs_file).unwrap();
-            let start = Instant::now();
-            calculate_witness_vm2(&circuit, &inputs_reader, &mut witness_buf).unwrap();
-            println!("Witness generated in: {:?}", start.elapsed());
-
-            if let Some(ref wtns_file) = args.wtns_file {
-                let mut f = File::create(wtns_file).unwrap();
-                f.write_all(&witness_buf).unwrap();
-                println!("Witness saved to {}", wtns_file);
-            }
-        }
-
-        if args.output_file.is_some() {
-            serialize_witnesscalc_vm2(&mut bytecode_buf, &circuit).unwrap();
-        }
+        run(&ff, &program, &args).unwrap();
     } else {
         eprintln!("ERROR: Unsupported prime field");
         std::process::exit(1);
+    }
+}
+
+fn run<T: FieldOps>(ff: &Field<T>, program: &AST, args: &Args) -> Result<(), Box<dyn Error>> {
+    let start = Instant::now();
+    let circuit = compile(ff, program)?;
+    let mut bytecode_buf: Vec<u8> = Vec::new();
+
+    println!("Circuit compiled in: {:?}", start.elapsed());
+
+    #[cfg(feature = "debug_vm2")]
+    {
+        for t in &circuit.templates {
+            disassemble::<T>(&TF::T(t))
+        }
+        for f in &circuit.functions {
+            disassemble::<T>(&TF::F(f))
+        }
+    }
+
+    if let Some(ref inputs_file) = args.inputs_file {
+        let inputs_reader = File::open(inputs_file)
+            .map_err(|e| format!("Failed to open inputs file {}: {}", inputs_file, e))?;
+        let start = Instant::now();
+        let mut witness_buf: Vec<u8> = Vec::new();
+        calculate_witness_vm2(&circuit, &inputs_reader, &mut witness_buf).unwrap();
+        println!("Witness generated in: {:?}", start.elapsed());
+
+        if let Some(ref wtns_file) = args.wtns_file {
+            let mut f = File::create(wtns_file).unwrap();
+            f.write_all(&witness_buf).unwrap();
+            println!("Witness saved to {}", wtns_file);
+        }
+    }
+
+    if args.output_file.is_some() {
+        serialize_witnesscalc_vm2(&mut bytecode_buf, &circuit).unwrap();
     }
 
     if let Some(ref output_file) = args.output_file {
         fs::write(output_file, &bytecode_buf).unwrap();
         println!("Bytecode saved to {}", output_file);
     }
+
+    Ok(())
 }
 
 /// Build input info directly from AST Input nodes

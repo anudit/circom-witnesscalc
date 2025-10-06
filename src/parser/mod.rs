@@ -201,7 +201,7 @@ fn parse_inputs(input: &mut &str) -> ModalResult<Vec<Input>> {
     ).parse_next(input)?;
     
     // Handle optional newline or space after count
-    let _ = alt((
+    alt((
         (space0, opt(parse_eol_comment), line_ending).void(),
         space1.void(),
     )).parse_next(input)?;

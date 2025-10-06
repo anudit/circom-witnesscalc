@@ -27,7 +27,7 @@ use crate::field::{bn254_prime, Field, FieldOperations, FieldOps, U254, U64};
 use crate::storage::proto_deserializer::deserialize_witnesscalc_graph_from_bytes;
 use crate::storage::{deserialize_witnesscalc_vm2_body, read_witnesscalc_vm2_header, WITNESSCALC_CVM_MAGIC, WITNESSCALC_GRAPH_MAGIC};
 use crate::vm2::{execute, Circuit};
-use crate::vm2_setup::{init_signals, build_component_tree};
+use crate::vm2_setup::{build_component_tree, init_signals};
 
 pub type InputSignalsInfo = HashMap<String, (usize, usize)>;
 
@@ -448,22 +448,22 @@ pub fn calculate_witness_vm2<T: FieldOps>(
     circuit: &Circuit<T>, inputs_json: impl std::io::Read,
     mut w: impl std::io::Write) -> Result<(), Box<dyn std::error::Error>> {
 
-    let mut signals = init_signals(
-        inputs_json, circuit.signals_num, &circuit.field,
-        &circuit.types, &circuit.input_infos)?;
-
     let mut component_tree = build_component_tree(
         circuit.main_template_id, &circuit.templates);
+
+    init_signals(
+        inputs_json, &circuit.field, &circuit.types, &circuit.input_infos,
+        &mut component_tree)?;
 
     #[cfg(feature = "debug_vm2")]
     vm2_setup::debug_component_tree(&component_tree, &circuit.templates);
 
     let start = std::time::Instant::now();
-    execute(circuit, &mut signals, &circuit.field, &mut component_tree)?;
+    execute(circuit, &circuit.field, &mut component_tree)?;
     println!("VM2 executed in {:?}", start.elapsed());
 
-    let wtns_data = witness(
-        &signals, &circuit.witness, circuit.field.prime)?;
+    let witness_signals = witness_signals(&component_tree, &circuit.witness)?;
+    let wtns_data = witness(witness_signals, circuit.field.prime)?;
 
     w.write_all(&wtns_data)?;
     w.flush()?;
@@ -471,26 +471,36 @@ pub fn calculate_witness_vm2<T: FieldOps>(
     Ok(())
 }
 
-fn witness<T: FieldOps>(
-    signals: &[Option<T>], witness_signals: &[usize],
-    prime: T) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+fn witness_signals<T: FieldOps>(
+    component_tree: &vm2::Component<T>,
+    witness_signals: &[usize]) -> Result<Vec<T>, Box<dyn std::error::Error>> {
 
-    let mut result = Vec::with_capacity(witness_signals.len());
+    let start = std::time::Instant::now();
+    let signals_num = component_tree.total_signals_len() + 1;
+    let mut signals = Vec::with_capacity(signals_num);
+    signals.push(Some(T::one()));
+    component_tree.write_all_signals(&mut signals);
 
-    for &idx in witness_signals {
-        if idx >= signals.len() {
-            return Err("witness signal index out of bounds".into());
-        }
-
-        match signals[idx] {
-            Some(s) => result.push(s),
-            None => return Err(format!("witness signal isnot set: {}", idx).into()),
-        }
+    let mut witness: Vec<T> = Vec::with_capacity(witness_signals.len());
+    for idx in witness_signals {
+        witness.push(
+            signals[*idx]
+                .ok_or_else(|| format!("witness signal {} not set", idx))?);
     }
+
+    println!(
+        "Witness signals gethered in {:?}. Total signals: {}, witness signals: {}.",
+        start.elapsed(), signals_num, witness.len());
+
+    Ok(witness)
+}
+fn witness<T: FieldOps>(
+    witness_signals: Vec<T>,
+    prime: T) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
 
     match T::BYTES {
         8 => {
-            let vec_witness: Vec<FieldElement<8>> = result
+            let vec_witness: Vec<FieldElement<8>> = witness_signals
                 .iter()
                 .map(|a| {
                     let a: [u8; 8] = a.to_le_bytes().try_into().unwrap();
@@ -500,7 +510,7 @@ fn witness<T: FieldOps>(
             Ok(wtns_from_witness2(vec_witness, prime))
         }
         32 => {
-            let vec_witness: Vec<FieldElement<32>> = result
+            let vec_witness: Vec<FieldElement<32>> = witness_signals
                 .iter()
                 .map(|a| {
                     let a: [u8; 32] = a.to_le_bytes().try_into().unwrap();

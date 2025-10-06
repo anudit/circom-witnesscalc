@@ -1,16 +1,14 @@
 use std::collections::HashMap;
 use crate::field::{FieldOperations, FieldOps};
-use crate::vm2::{Component, InputInfo, Signals, Template, Type, TypeFieldKind};
+use crate::vm2::{Component, InputInfo, Template, Type, TypeFieldKind};
 
 /// Initialize signals array with input values from JSON
 pub fn init_signals<T: FieldOps, F>(
-    inputs_json: impl std::io::Read, signals_num: usize, ff: &F, types: &[Type],
-    input_infos: &[InputInfo]) -> Result<Vec<Option<T>>, Box<dyn std::error::Error>>
+    inputs_json: impl std::io::Read, ff: &F, types: &[Type],
+    input_infos: &[InputInfo],
+    component: &mut Component<T>) -> Result<(), Box<dyn std::error::Error>>
 where
         for <'a> &'a F: FieldOperations<Type = T> {
-
-    let mut signals = vec![None; signals_num];
-    signals[0] = Some(T::one());
 
     // Expand each InputInfo into all its constituent signal paths
     let mut signal_path_to_idx: HashMap<String, usize> = HashMap::new();
@@ -27,7 +25,7 @@ where
         // Try to find exact match first
         if let Some(&signal_idx) = signal_path_to_idx.get(path) {
             signal_path_to_idx.remove(path);
-            signals[signal_idx] = Some(*value);
+            component.set_signal(signal_idx-1, *value)?;
             continue;
         }
 
@@ -35,7 +33,7 @@ where
         if let Some(multidim_path) = try_convert_flat_to_multidim_path(path, input_infos) {
             if let Some(&signal_idx) = signal_path_to_idx.get(&multidim_path) {
                 signal_path_to_idx.remove(&multidim_path);
-                signals[signal_idx] = Some(*value);
+                component.set_signal(signal_idx-1, *value)?;
                 continue;
             }
         }
@@ -45,7 +43,7 @@ where
             let base_path = path.trim_end_matches("[0]");
             if let Some(&signal_idx) = signal_path_to_idx.get(base_path) {
                 signal_path_to_idx.remove(base_path);
-                signals[signal_idx] = Some(*value);
+                component.set_signal(signal_idx-1, *value)?;
                 continue;
             }
         }
@@ -59,7 +57,7 @@ where
         return Err(format!("Missing input signals: {}", missing_signals.join(", ")).into());
     }
 
-    Ok(signals)
+    Ok(())
 }
 
 /// Build the component tree for VM2 execution
@@ -90,13 +88,12 @@ fn create_component<T: FieldOps>(
         });
     }
     (
-        Component {
+        Component::new(
             signals_start,
             template_id,
             components,
-            number_of_inputs: t.number_of_inputs,
-            signals: Signals::new(t.signals_num),
-        },
+            t.number_of_inputs,
+            t.signals_num),
         next_signal_start - signals_start
     )
 }
@@ -542,8 +539,14 @@ mod tests {
         let inputs_content = include_str!("../tests/vm2_setup/data/test_init_signals__inputs.json");
 
         let inputs_reader = std::io::Cursor::new(&inputs_content);
-        let result = init_signals(
-            inputs_reader, 44, &ff, &circuit.types, &circuit.input_infos).unwrap();
+
+        let mut component = Component::new(
+            0, 0, vec![], 0,
+            43);
+
+        init_signals(
+            inputs_reader, &ff, &circuit.types, &circuit.input_infos,
+            &mut component).unwrap();
 
         let want: Vec<Option<U254>> = vec![
             Some(U254::from_str("1").unwrap()), // 0
@@ -592,7 +595,12 @@ mod tests {
             None, // 43
         ];
 
-        assert_eq!(result, want);
+        let mut signals: Vec<Option<U254>> = Vec::new();
+        use num_traits::One;
+        signals.push(Some(U254::one()));
+        component.write_all_signals(&mut signals);
+
+        assert_eq!(signals, want);
     }
 
     #[test]
@@ -613,11 +621,19 @@ mod tests {
         assert_eq!(want_prime, prime);
         let ff = Field::new(bn254_prime);
         let circuit = deserialize_witnesscalc_vm2_body(&mut wcd_reader, ff.clone()).unwrap();
+        let mut component = Component::new(
+            0, 0, vec![], 0,
+            18);
 
         // Call init_signals with the new signature
-        let result = init_signals(
-            inputs_reader, 19, &ff, &circuit.types,
-            &circuit.input_infos).unwrap();
+        init_signals(
+            inputs_reader, &ff, &circuit.types,
+            &circuit.input_infos, &mut component).unwrap();
+
+        let mut signals = Vec::new();
+        use num_traits::One;
+        signals.push(Some(U254::one()));
+        component.write_all_signals(&mut signals);
 
         // Expected result
         let want: Vec<Option<U254>> = vec![
@@ -642,7 +658,7 @@ mod tests {
             Some(U254::from_str("12").unwrap()), // 18
         ];
 
-        assert_eq!(result, want);
+        assert_eq!(signals, want);
     }
 
     #[test]

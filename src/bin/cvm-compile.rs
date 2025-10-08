@@ -585,7 +585,8 @@ where
         },
         FfExpr::Literal(v) => {
             ctx.code.push(OpCode::PushFf as u8);
-            let x = ff.parse_le_bytes(v.to_le_bytes().as_slice())?;
+            let x = ff.parse_le_bytes(v.to_le_bytes().as_slice())
+                .map_err(|e| -> Box<dyn Error> {e})?;
             ctx.code.extend_from_slice(x.to_le_bytes().as_slice());
         },
         FfExpr::Load(idx) => {
@@ -684,7 +685,8 @@ where
                     }
                     ast::CallArgument::FfLiteral(value) => {
                         ctx.code.push(1); // arg type 1 = ff literal
-                        let x = ff.parse_le_bytes(value.to_le_bytes().as_slice())?;
+                        let x = ff.parse_le_bytes(value.to_le_bytes().as_slice())
+                            .map_err(|e| -> Box<dyn Error> {e})?;
                         ctx.code.extend_from_slice(x.to_le_bytes().as_slice());
                     }
                     ast::CallArgument::Variable(var_name) => {
@@ -998,7 +1000,8 @@ where
                     }
                     ast::CallArgument::FfLiteral(value) => {
                         ctx.code.push(1); // arg type 1 = ff literal
-                        let x = ff.parse_le_bytes(value.to_le_bytes().as_slice())?;
+                        let x = ff.parse_le_bytes(value.to_le_bytes().as_slice())
+                            .map_err(|e| -> Box<dyn Error> {e})?;
                         ctx.code.extend_from_slice(x.to_le_bytes().as_slice());
                     }
                     ast::CallArgument::Variable(var_name) => {

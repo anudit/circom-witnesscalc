@@ -459,7 +459,8 @@ pub fn calculate_witness_vm2<T: FieldOps>(
     vm2_setup::debug_component_tree(&component_tree, &circuit.templates);
 
     let start = std::time::Instant::now();
-    execute(circuit, &circuit.field, &mut component_tree)?;
+    execute(circuit, &circuit.field, &mut component_tree)
+        .map_err(|e| -> Box<dyn std::error::Error> { e })?;
     println!("VM2 executed in {:?}", start.elapsed());
 
     let witness_signals = witness_signals(&component_tree, &circuit.witness)?;

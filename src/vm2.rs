@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::error::Error;
+use std::sync::{Arc, Condvar, Mutex, OnceLock, RwLock};
 use bitvec::order::Lsb0;
 use bitvec::vec::BitVec;
 use crate::field::{Field, FieldOperations, FieldOps};
@@ -273,7 +274,7 @@ impl <T: FieldOps> Signals<T> {
         }
     }
 
-    pub fn set(&mut self, idx: usize, val: T) -> Result<(), Box<dyn Error>> {
+    pub fn set(&mut self, idx: usize, val: T) -> Result<(), Box<dyn Error + Sync + Send>> {
         match self.signals.get_mut(idx) {
             Some(slot) => {
                 if self.present[idx] {
@@ -289,7 +290,7 @@ impl <T: FieldOps> Signals<T> {
         }
     }
 
-    pub fn get(&self, idx: usize) -> Result<T, Box<dyn Error>> {
+    pub fn get(&self, idx: usize) -> Result<T, Box<dyn Error + Sync + Send>> {
         match self.signals.get(idx) {
             None => {
                 Err(Box::new(RuntimeError::SignalIndexOutOfBounds))
@@ -321,16 +322,18 @@ impl <T: FieldOps> Signals<T> {
 pub struct Component<T: FieldOps> {
     pub signals_start: usize,
     pub template_id: usize,
-    pub components: Vec<Option<Box<Component<T>>>>,
+    // pub components: Vec<Option<Box<Component<T>>>>,
+    pub components: Vec<Option<Arc<RwLock<Component<T>>>>>,
     pub number_of_inputs: usize,
     signals: Signals<T>,
+    pub execution_result: Arc<OnceLock<Option<Arc<dyn Error + Sync + Send>>>>,
 }
 
 impl <T: FieldOps> Component<T> {
     pub fn new(
         signals_start: usize,
         template_id: usize,
-        components: Vec<Option<Box<Component<T>>>>,
+        components: Vec<Option<Arc<RwLock<Component<T>>>>>,
         number_of_inputs: usize,
         signals_num: usize) -> Component<T> {
         Component {
@@ -339,16 +342,23 @@ impl <T: FieldOps> Component<T> {
             components,
             number_of_inputs,
             signals: Signals::new(signals_num),
+            execution_result: Arc::new(OnceLock::new()),
         }
     }
 
-    pub fn set_signal(&mut self, idx: usize, val: T) -> Result<(), Box<dyn Error>> {
+    pub fn set_signal(&mut self, idx: usize, val: T) -> Result<(), Box<dyn Error + Sync + Send>> {
         // println!("SET SIGNAL {}/{}/{}", self.template_id, self.signals_start, idx);
         self.signals.set(idx, val)
     }
 
-    pub fn get_signal(&self, idx: usize) -> Result<T, Box<dyn Error>> {
+    pub fn get_signal(&self, idx: usize) -> Result<T, Box<dyn Error + Sync + Send>> {
         // println!("GET SIGNAL {}/{}/{}", self.template_id, self.signals_start, idx);
+        if let Some(Some(err)) = self.execution_result.get() {
+            return Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("Component execution failed: {}", err)
+            )));
+        }
         self.signals.get(idx)
     }
 
@@ -361,13 +371,16 @@ impl <T: FieldOps> Component<T> {
         self.signals.signals_len() + self.components.iter().flatten()
             .fold(
                 0,
-                |acc, x| acc + x.total_signals_len())
+                |acc, x| acc + x.read().unwrap().total_signals_len())
+        // self.signals.signals_len() + self.components2.iter().flatten().fold(
+        //     0,
+        // |acc, x| {acc + x.read().unwrap().total_signals_len()})
     }
 
     pub fn write_all_signals(&self, signals: &mut Vec<Option<T>>) {
         signals.extend(self.signals.iter());
         for component in self.components.iter().flatten() {
-            component.write_all_signals(signals);
+            component.read().unwrap().write_all_signals(signals);
         }
     }
 }
@@ -615,7 +628,7 @@ fn calculate_args_size<T: FieldOps>(code: &[u8], arg_count: u8) -> Result<usize,
 // Helper function to process function arguments
 fn process_function_arguments<T: FieldOps>(
     vm: &mut VM<T>, code: &[u8], arg_count: u8,
-    component_tree: &Component<T>) -> Result<(), Box<dyn Error>> {
+    component_tree: &Component<T>) -> Result<(), Box<dyn Error + Sync + Send>> {
 
     let mut offset = 0;
     let mut ff_arg_idx = 0;
@@ -945,7 +958,7 @@ fn process_function_arguments<T: FieldOps>(
                     }
                     Some(ref c) => {
                         for i in 0..size {
-                            vm.memory_ff[dst_base+i] = Some(c.get_signal(sig_idx+i)?);
+                            vm.memory_ff[dst_base+i] = Some(c.read().unwrap().get_signal(sig_idx+i)?);
                         }
                         ff_arg_idx += size;
                     }
@@ -1404,12 +1417,48 @@ fn get_current_context<'a, T: FieldOps>(
     }
 }
 
+fn spawn_component_execution<'scope, 'env, F, T: FieldOps>(
+    scope: &'scope std::thread::Scope<'scope, 'env>,
+    circuit: &'env Circuit<T>,
+    ff: &'env F,
+    c: Arc<RwLock<Component<T>>>,
+)
+where
+    for <'a> &'a F: FieldOperations<Type = T>,
+    T: 'env,
+{
+    let pair = Arc::new((Mutex::new(false), Condvar::new()));
+    let pair2 = Arc::clone(&pair);
+    let c_clone = c.clone();
+    let execution_result = c.read().unwrap().execution_result.clone();
+
+    scope.spawn(move || {
+        let mut component = c_clone.write().unwrap();
+
+        let (lock, cvar) = &*pair2;
+        let mut started = lock.lock().unwrap();
+        *started = true;
+        cvar.notify_one();
+
+        let result = execute(circuit, ff, &mut component);
+        let error_opt = result.err().map(|e| Arc::from(e) as Arc<dyn Error + Sync + Send>);
+        let _ = execution_result.set(error_opt);
+    });
+
+    let (lock, cvar) = &*pair;
+    let mut started = lock.lock().unwrap();
+    while !*started {
+        started = cvar.wait(started).unwrap();
+    }
+}
+
 pub fn execute<F, T: FieldOps>(
     circuit: &Circuit<T>, ff: &F,
-    component_tree: &mut Component<T>) -> Result<(), Box<dyn Error>>
+    component_tree: &mut Component<T>) -> Result<(), Box<dyn Error + Sync + Send>>
 where
     for <'a> &'a F: FieldOperations<Type = T> {
 
+    std::thread::scope(|scope| -> Result<(), Box<dyn Error + Sync + Send>> {
     #[cfg(feature = "debug_vm2")]
     {
         let template_name = &circuit.templates[component_tree.template_id].name;
@@ -1417,8 +1466,8 @@ where
     }
     component_tree.components.iter_mut()
         .filter_map(|x| x.as_mut())
-        .filter(|x| x.number_of_inputs == 0)
-        .try_for_each(|c| execute(circuit, ff, c))?;
+        .filter(|x| x.read().unwrap().number_of_inputs == 0)
+        .for_each(|c| spawn_component_execution(scope, circuit, ff, c.clone()));
 
     let mut ip: usize = 0;
     let mut vm = VM::<T>::new();
@@ -1577,11 +1626,12 @@ where
                 let cmp_idx = vm.pop_usize()?;
                 let sig = component_tree.components[cmp_idx].as_ref()
                     .ok_or_else(|| Box::new(RuntimeError::UninitializedComponent))?
+                    .read().unwrap()
                     .get_signal(sig_idx)?;
                 #[cfg(feature = "debug_vm2")]
                 {
                     let signals_start = component_tree.components[cmp_idx]
-                        .as_ref().unwrap().signals_start;
+                        .as_ref().unwrap().read().unwrap().signals_start;
                     println!(
                         "LoadCmpSignal [S{}]: {} = {}",
                         signals_start + sig_idx, sig_idx, sig);
@@ -1597,11 +1647,15 @@ where
                         return Err(
                             Box::new(RuntimeError::UninitializedComponent))
                     }
-                    Some(ref mut c) => {
-                        c.set_signal(sig_idx, value)?;
-                        c.number_of_inputs -= 1;
+                    Some(ref c) => {
+                        {
+                            let mut c = c.write().unwrap();
+                            c.set_signal(sig_idx, value)?;
+                            c.number_of_inputs -= 1;
+                        }
                         #[cfg(feature = "debug_vm2")]
                         {
+                            let c = c.read().unwrap();
                             println!(
                                 "StoreCmpSignalAndRun [S{}]: {}[{}/{}] = {}, inputs left: {}, template: {}",
                                 c.signals_start + sig_idx, cmp_idx, c.signals_start, sig_idx, value,
@@ -1610,7 +1664,11 @@ where
                                 "StoreCmpSignalAndRun: Run component {}",
                                 cmp_idx);
                         }
-                        execute(circuit, ff, c)?;
+
+                        spawn_component_execution(scope, circuit, ff, c.clone());
+                        // let result = handle.join().unwrap();
+
+                        // execute(circuit, ff, &mut c.write().unwrap())?;
                     }
                 }
             }
@@ -1624,23 +1682,31 @@ where
                             Box::new(RuntimeError::UninitializedComponent))
                     }
                     Some(ref mut c) => {
-                        c.set_signal(sig_idx, value)?;
-                        c.number_of_inputs -= 1;
+                        let mut run = false;
+                        {
+                            let mut c = c.write().unwrap();
+                            c.set_signal(sig_idx, value)?;
+                            c.number_of_inputs -= 1;
+                            if c.number_of_inputs == 0 {
+                                run = true;
+                            }
+                        }
                         #[cfg(feature = "debug_vm2")]
                         {
+                            let c = c.read().unwrap();
                             println!(
                                 "StoreCmpSignalCntCheck [S{}]: {}[{}/{}] = {}, inputs left: {}, template: {}",
                                 c.signals_start + sig_idx, cmp_idx, c.signals_start, sig_idx, value,
                                 c.number_of_inputs, circuit.templates[c.template_id].name);
                         }
-                        if c.number_of_inputs == 0 {
+                        if run {
                             #[cfg(feature = "debug_vm2")]
                             {
                                 println!(
                                     "StoreCmpSignalCntCheck: Run component {}",
                                     cmp_idx);
                             }
-                            execute(circuit, ff, c)?;
+                            spawn_component_execution(scope, circuit, ff, c.clone());
                         }
                     }
                 }
@@ -1655,10 +1721,14 @@ where
                             Box::new(RuntimeError::UninitializedComponent))
                     }
                     Some(ref mut c) => {
-                        c.set_signal(sig_idx, value)?;
-                        c.number_of_inputs -= 1;
+                        {
+                            let mut c = c.write().unwrap();
+                            c.set_signal(sig_idx, value)?;
+                            c.number_of_inputs -= 1;
+                        }
                         #[cfg(feature = "debug_vm2")]
                         {
+                            let c = c.read().unwrap();
                             println!(
                                 "StoreCmpInputCnt [S{}]: {}[{}/{}] = {}, inputs left: {}, template: {}",
                                 c.signals_start + sig_idx, cmp_idx, c.signals_start, sig_idx, value,
@@ -1678,9 +1748,10 @@ where
                             Box::new(RuntimeError::UninitializedComponent))
                     }
                     Some(ref mut c) => {
-                        c.set_signal(sig_idx, value)?;
+                        c.write().unwrap().set_signal(sig_idx, value)?;
                         #[cfg(feature = "debug_vm2")]
                         {
+                            let c = c.read().unwrap();
                             println!(
                                 "StoreCmpInput [S{}]: {}[{}/{}] = {}, inputs left: {}, template: {}",
                                 c.signals_start + sig_idx, cmp_idx, c.signals_start, sig_idx, value,
@@ -2095,7 +2166,7 @@ where
                     None => {
                         return Err(Box::new(RuntimeError::UninitializedComponent))
                     }
-                    Some(ref c) => c.template_id as i64
+                    Some(ref c) => c.read().unwrap().template_id as i64
                 };
                 vm.push_i64(template_id);
             }
@@ -2202,14 +2273,19 @@ where
                 for offset in 0..num_signals {
                     let value = component_tree.get_signal(self_sig_idx + offset)?;
                     component_tree.components[cmp_idx]
-                        .as_mut()
+                        .as_ref()
                         .ok_or(RuntimeError::UninitializedComponent)?
+                        .write().unwrap()
                         .set_signal(cmp_sig_idx+offset, value)?;
 
                     #[cfg(feature = "debug_vm2")]
                     {
                         let dst_idx =
-                            component_tree.components[cmp_idx].as_ref().unwrap().signals_start
+                            component_tree.components[cmp_idx]
+                                .as_ref()
+                                .unwrap()
+                                .read().unwrap()
+                                .signals_start
                                 + cmp_sig_idx + offset;
                         println!(
                             "CopyCmpInputsFromSelf [S{} -> S{}]: cmp {} sig {} = {} / {}",
@@ -2225,14 +2301,15 @@ where
                 match mode {
                     0b00 => {}
                     0b01 => {
-                        component_tree.components[cmp_idx].as_mut().unwrap().number_of_inputs -= num_signals;
+                        component_tree.components[cmp_idx].as_ref().unwrap().write().unwrap().number_of_inputs -= num_signals;
                     }
                     0b10 => {
                         should_run = true;
                     }
                     0b11 => {
-                        component_tree.components[cmp_idx].as_mut().unwrap().number_of_inputs -= num_signals;
-                        if component_tree.components[cmp_idx].as_ref().unwrap().number_of_inputs == 0 {
+                        let mut c = component_tree.components[cmp_idx].as_ref().unwrap().write().unwrap();
+                        c.number_of_inputs -= num_signals;
+                        if c.number_of_inputs == 0 {
                             should_run = true;
                         }
                     }
@@ -2241,11 +2318,13 @@ where
 
                 #[cfg(feature = "debug_vm2")]
                 {
+                    let c = component_tree.components[cmp_idx]
+                        .as_ref().unwrap()
+                        .read().unwrap();
                     println!(
                         "CopyCmpInputsFromSelf: cmp {} inputs left: {}, template: {}",
-                        cmp_idx,
-                        component_tree.components[cmp_idx].as_ref().unwrap().number_of_inputs,
-                        circuit.templates[component_tree.components[cmp_idx].as_ref().unwrap().template_id].name);
+                        cmp_idx, c.number_of_inputs,
+                        circuit.templates[c.template_id].name);
                 }
 
 
@@ -2256,7 +2335,9 @@ where
                             "CopyCmpInputsFromSelf: Run component {}",
                             cmp_idx);
                     }
-                    execute(circuit, ff, component_tree.components[cmp_idx].as_mut().unwrap())?;
+                    spawn_component_execution(
+                        scope, circuit, ff,
+                        component_tree.components[cmp_idx].as_ref().unwrap().clone());
                 }
             }
             OpCode::CopyCmpInputsFromCmp => {
@@ -2276,15 +2357,17 @@ where
                 for offset in 0..num_signals {
                     let value = component_tree.components[src_cmp_idx].as_ref()
                         .ok_or_else(|| Box::new(RuntimeError::UninitializedComponent))?
+                        .write().unwrap()
                         .get_signal(src_sig_idx + offset)?;
-                    component_tree.components[dst_cmp_idx].as_mut()
+                    component_tree.components[dst_cmp_idx].as_ref()
                         .ok_or_else(|| Box::new(RuntimeError::UninitializedComponent))?
+                        .write().unwrap()
                         .set_signal(dst_sig_idx + offset, value)?;
 
                     #[cfg(feature = "debug_vm2")]
                     {
-                        let src_index_start = component_tree.components[src_cmp_idx].as_ref().unwrap().signals_start;
-                        let dst_index_start = component_tree.components[dst_cmp_idx].as_ref().unwrap().signals_start;
+                        let src_index_start = component_tree.components[src_cmp_idx].as_ref().unwrap().read().unwrap().signals_start;
+                        let dst_index_start = component_tree.components[dst_cmp_idx].as_ref().unwrap().read().unwrap().signals_start;
                         println!(
                             "CopyCmpInputsFromCmp [cmp {} S{} {} -> cmp {} S{} {}] = {}",
                             src_cmp_idx,
@@ -2304,14 +2387,20 @@ where
                 match mode {
                     0b00 => {}
                     0b01 => {
-                        component_tree.components[dst_cmp_idx].as_mut().unwrap().number_of_inputs -= num_signals;
+                        component_tree.components[dst_cmp_idx]
+                            .as_ref().unwrap()
+                            .write().unwrap()
+                            .number_of_inputs -= num_signals;
                     }
                     0b10 => {
                         should_run = true;
                     }
                     0b11 => {
-                        component_tree.components[dst_cmp_idx].as_mut().unwrap().number_of_inputs -= num_signals;
-                        if component_tree.components[dst_cmp_idx].as_ref().unwrap().number_of_inputs == 0 {
+                        let mut c = component_tree.components[dst_cmp_idx]
+                            .as_ref().unwrap()
+                            .write().unwrap();
+                        c.number_of_inputs -= num_signals;
+                        if c.number_of_inputs == 0 {
                             should_run = true;
                         }
                     }
@@ -2320,11 +2409,13 @@ where
 
                 #[cfg(feature = "debug_vm2")]
                 {
+                    let c = component_tree.components[dst_cmp_idx]
+                        .as_ref().unwrap()
+                        .read().unwrap();
                     println!(
                         "CopyCmpInputsFromCmp: cmp {} inputs left: {}, template: {}",
-                        dst_cmp_idx,
-                        component_tree.components[dst_cmp_idx].as_ref().unwrap().number_of_inputs,
-                        circuit.templates[component_tree.components[dst_cmp_idx].as_ref().unwrap().template_id].name
+                        dst_cmp_idx, c.number_of_inputs,
+                        circuit.templates[c.template_id].name
                     );
                 }
 
@@ -2336,7 +2427,11 @@ where
                             dst_cmp_idx
                         );
                     }
-                    execute(circuit, ff, component_tree.components[dst_cmp_idx].as_mut().unwrap())?;
+                    spawn_component_execution(
+                        scope, circuit, ff,
+                        component_tree.components[dst_cmp_idx]
+                            .as_ref().unwrap()
+                            .clone());
                 }
 
             }
@@ -2370,15 +2465,19 @@ where
                         None => {
                             return Err(Box::new(RuntimeError::UninitializedComponent));
                         }
-                        Some(ref component) => component.get_signal(cmp_sig_idx + offset)?,
+                        Some(ref component) => component
+                            .read().unwrap()
+                            .get_signal(cmp_sig_idx + offset)?,
                     };
                     component_tree.set_signal(dst_idx+offset, value)?;
 
                     #[cfg(feature = "debug_vm2")]
                     {
+                        let c = component_tree.components[cmp_idx]
+                            .as_ref().unwrap()
+                            .read().unwrap();
                         let src_sig_idx =
-                            component_tree.components[cmp_idx].as_ref().unwrap().signals_start
-                                + cmp_sig_idx + offset;
+                            c.signals_start + cmp_sig_idx + offset;
                         let dst_sig_idx =
                             component_tree.signals_start + dst_idx + offset;
                         println!(
@@ -2424,7 +2523,10 @@ where
                 }
             }
         }
+
     }
+    Ok(())
+    })?;
 
     Ok(())
 }

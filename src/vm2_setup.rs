@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::error::Error;
+use std::sync::{Arc, RwLock};
 use crate::field::{FieldOperations, FieldOps};
 use crate::vm2::{Component, InputInfo, Template, Type, TypeFieldKind};
 
@@ -25,7 +27,7 @@ where
         // Try to find exact match first
         if let Some(&signal_idx) = signal_path_to_idx.get(path) {
             signal_path_to_idx.remove(path);
-            component.set_signal(signal_idx-1, *value)?;
+            component.set_signal(signal_idx-1, *value).map_err(|e| -> Box<dyn Error> {e})?;
             continue;
         }
 
@@ -33,7 +35,7 @@ where
         if let Some(multidim_path) = try_convert_flat_to_multidim_path(path, input_infos) {
             if let Some(&signal_idx) = signal_path_to_idx.get(&multidim_path) {
                 signal_path_to_idx.remove(&multidim_path);
-                component.set_signal(signal_idx-1, *value)?;
+                component.set_signal(signal_idx-1, *value).map_err(|e| -> Box<dyn Error> {e})?;
                 continue;
             }
         }
@@ -43,7 +45,7 @@ where
             let base_path = path.trim_end_matches("[0]");
             if let Some(&signal_idx) = signal_path_to_idx.get(base_path) {
                 signal_path_to_idx.remove(base_path);
-                component.set_signal(signal_idx-1, *value)?;
+                component.set_signal(signal_idx-1, *value).map_err(|e| -> Box<dyn Error> {e})?;
                 continue;
             }
         }
@@ -83,7 +85,7 @@ fn create_component<T: FieldOps>(
                 let (c, signals_num) = create_component(
                     *tmpl_id, next_signal_start, vm_templates);
                 next_signal_start += signals_num;
-                Some(Box::new(c))
+                Some(Arc::new(RwLock::new(c)))
             }
         });
     }
@@ -277,7 +279,8 @@ where
         serde_json::Value::Number(n) => {
             let v = if n.is_u64() {
                 let n = n.as_u64().unwrap();
-                ff.parse_le_bytes(n.to_le_bytes().as_slice())?
+                ff.parse_le_bytes(n.to_le_bytes().as_slice())
+                    .map_err(|e| -> Box<dyn Error> {e})?
             } else if n.is_i64() {
                 let n = n.as_i64().unwrap();
                 ff.parse_str(&n.to_string())?
@@ -342,7 +345,7 @@ fn print_component_tree<T: FieldOps>(component: &Component<T>, templates: &[Temp
             match sub_component {
                 Some(sub) => {
                     print!("{}  [{}]: ", indent_str, i);
-                    print_component_tree(sub, templates, indent + 2);
+                    print_component_tree(&sub.read().unwrap(), templates, indent + 2);
                 }
                 None => {
                     println!("{}  [{}]: -", indent_str, i);
@@ -480,14 +483,14 @@ mod tests {
         assert_eq!(component_tree.components.len(), 2);
 
         // Verify the first child component (Middle1)
-        let middle1 = component_tree.components[0].as_ref().unwrap();
+        let middle1 = component_tree.components[0].as_ref().unwrap().read().unwrap();
         assert_eq!(middle1.signals_start, 6); // 1 (start) + 5 (signals_num of root)
         assert_eq!(middle1.template_id, 4);
         assert_eq!(middle1.number_of_inputs, 1);
         assert_eq!(middle1.components.len(), 2);
 
         // Verify the second child component (Middle2)
-        let middle2 = component_tree.components[1].as_ref().unwrap();
+        let middle2 = component_tree.components[1].as_ref().unwrap().read().unwrap();
         assert_eq!(middle2.signals_start, 16); // 6 (start of middle1) + 4 (signals_num of middle1) + 3 (signals_num of leaf1) + 3 (signals_num of leaf2)
         assert_eq!(middle2.template_id, 5);
         assert_eq!(middle2.number_of_inputs, 1);
@@ -497,26 +500,26 @@ mod tests {
         assert!(middle2.components[1].is_none());
 
         // Verify the leaf components of Middle1
-        let leaf1 = middle1.components[0].as_ref().unwrap();
+        let leaf1 = middle1.components[0].as_ref().unwrap().read().unwrap();
         assert_eq!(leaf1.signals_start, 10); // 6 (start of middle1) + 4 (signals_num of middle1)
         assert_eq!(leaf1.template_id, 0);
         assert_eq!(leaf1.number_of_inputs, 1);
         assert_eq!(leaf1.components.len(), 0);
 
-        let leaf2 = middle1.components[1].as_ref().unwrap();
+        let leaf2 = middle1.components[1].as_ref().unwrap().read().unwrap();
         assert_eq!(leaf2.signals_start, 13); // 10 (start of leaf1) + 3 (signals_num of leaf1)
         assert_eq!(leaf2.template_id, 1);
         assert_eq!(leaf2.number_of_inputs, 1);
         assert_eq!(leaf2.components.len(), 0);
 
         // Verify the leaf components of Middle2
-        let leaf3 = middle2.components[0].as_ref().unwrap();
+        let leaf3 = middle2.components[0].as_ref().unwrap().read().unwrap();
         assert_eq!(leaf3.signals_start, 20); // 16 (start of middle2) + 4 (signals_num of middle2)
         assert_eq!(leaf3.template_id, 2);
         assert_eq!(leaf3.number_of_inputs, 1);
         assert_eq!(leaf3.components.len(), 0);
 
-        let leaf4 = middle2.components[2].as_ref().unwrap();
+        let leaf4 = middle2.components[2].as_ref().unwrap().read().unwrap();
         assert_eq!(leaf4.signals_start, 23); // 20 (start of leaf3) + 3 (signals_num of leaf3)
         assert_eq!(leaf4.template_id, 3);
         assert_eq!(leaf4.number_of_inputs, 1);

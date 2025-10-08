@@ -181,7 +181,7 @@ impl FieldOps for U64 {
             .map_err(|e| -> Box<dyn std::error::Error> {Box::new(e)})?))
     }
 
-    fn from_le_bytes(v: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
+    fn from_le_bytes(v: &[u8]) -> Result<Self, Box<dyn std::error::Error + Sync + Send>> {
         // If length is less than or equal to 8, proceed normally
         if v.len() <= 8 {
             let mut bytes = [0u8; 8];
@@ -277,7 +277,7 @@ impl FieldOps for U254 {
         U254::from_str_radix(v, 10).map_err(|e| e.into())
     }
 
-    fn from_le_bytes(v: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
+    fn from_le_bytes(v: &[u8]) -> Result<Self, Box<dyn std::error::Error + Sync + Send>> {
         U254::try_from_le_slice(v).ok_or_else(|| anyhow!("invalid le bytes").into())
     }
 
@@ -322,14 +322,14 @@ pub trait FieldOps: Sized + Copy + Zero + One + PartialEq + Sub<Output = Self>
     + Shr<usize, Output = Self> + Shl<usize, Output = Self> + Rem<Output = Self>
     + BitAnd<Output = Self> + BitOr<Output = Self> + BitXor<Output = Self>
     + PartialOrd + Not<Output = Self> + TryInto<isize> + Div<Output = Self>
-    + Eq + Hash + TryFrom<usize> + Display {
+    + Eq + Hash + TryFrom<usize> + Display + Sync + Send {
 
     const BITS: usize;
     const BYTES: usize;
     const MAX: Self;
 
     fn from_str(v: &str) -> Result<Self, Box<dyn std::error::Error>>;
-    fn from_le_bytes(v: &[u8]) -> Result<Self, Box<dyn std::error::Error>>;
+    fn from_le_bytes(v: &[u8]) -> Result<Self, Box<dyn std::error::Error + Sync + Send>>;
     fn to_le_bytes(&self) -> Vec<u8>;
 
     fn add_mod(self, rhs: Self, m: Self) -> Self;
@@ -341,11 +341,11 @@ pub trait FieldOps: Sized + Copy + Zero + One + PartialEq + Sub<Output = Self>
     // fn from_usize(value: usize) -> Self;
 }
 
-pub trait FieldOperations {
+pub trait FieldOperations: Sync + Send {
     type Type: FieldOps;
 
     fn parse_str(&self, v: &str) -> Result<Self::Type, Box<dyn std::error::Error>>;
-    fn parse_le_bytes(&self, v: &[u8]) -> Result<Self::Type, Box<dyn std::error::Error>>;
+    fn parse_le_bytes(&self, v: &[u8]) -> Result<Self::Type, Box<dyn std::error::Error + Sync + Send>>;
     fn parse_usize(&self, v: usize) -> Result<Self::Type, Box<dyn std::error::Error>>;
 
     fn op_uno(&self, op: UnoOperation, a: Self::Type) -> Self::Type;
@@ -435,7 +435,7 @@ impl<T: FieldOps> FieldOperations for &Field<T> {
         Ok(v)
     }
 
-    fn parse_le_bytes(&self, v: &[u8]) -> Result<Self::Type, Box<dyn std::error::Error>> {
+    fn parse_le_bytes(&self, v: &[u8]) -> Result<Self::Type, Box<dyn std::error::Error + Sync + Send>> {
         let v = T::from_le_bytes(v)?;
         if v > self.prime {
             Ok(v % self.prime)

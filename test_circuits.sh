@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-set -eu
+set -eux
 
 ptau_url="https://storage.googleapis.com/zkevm/ptau/powersOfTau28_hez_final_18.ptau"
 

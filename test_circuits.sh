@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-set -eux
+set -eu
 
 ptau_url="https://storage.googleapis.com/zkevm/ptau/powersOfTau28_hez_final_18.ptau"
 
@@ -42,7 +42,7 @@ print_usage() {
     echo "  $0 test_circuits/circuit1.circom"
 }
 
-declare -a library_paths
+declare -a library_paths=()
 
 while getopts ":p:l:h" opt; do
   case $opt in
@@ -78,7 +78,7 @@ fi
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 echo "script dir ${script_dir}"
 
-if [ ${#library_paths} -eq 0 ]; then
+if [ ${#library_paths[@]} -eq 0 ]; then
     library_paths+=("${script_dir}/test_deps/circomlib/circuits")
 fi
 
@@ -122,7 +122,7 @@ function test_circuit() {
 	pushd "$workdir" > /dev/null
 
 #	circom "${include_args[@]}" --prime grumpkin --r1cs --wasm "$circuit_path"
-	time circom "${include_args[@]}" --sym --r1cs --wasm "$circuit_path"
+	circom "${include_args[@]}" --r1cs --wasm "$circuit_path"
 	local r1cs_md5=$(openssl dgst -hex -md5 "${r1cs_path}" | awk '{print $2}')
 	local zkey_path="${circuit_name}_${r1cs_md5}_final.zkey"
 	local vk_path="${workdir}/${circuit_name}_${r1cs_md5}_verification_key.json"
@@ -156,6 +156,8 @@ function test_circuit() {
 	popd > /dev/null
 }
 
+source "${script_dir}/check_witnesscalc.sh"
+
 if [ $# -gt 0 ]; then
 	for arg in "$@"; do
 		circuit_path=$(realpath "$arg")
@@ -168,6 +170,20 @@ if [ $# -gt 0 ]; then
 else
 	for circuit_path in "${script_dir}"/test_circuits/*.circom; do
 		circuit_path=$(realpath "$circuit_path")
-		test_circuit "${circuit_path}"
+
+		mode=$(check_witnesscalc_graph "$circuit_path")
+
+		echo "file: ${circuit_path}"
+		echo "mode: ${mode}"
+
+		case "$mode" in
+			none)
+				echo "Processing $circuit_path ($mode)"
+				test_circuit "${circuit_path}"
+				;;
+			*)
+				echo "Skipped $circuit_path (includes -graph or -vm directive)"
+				;;
+		esac
 	done
 fi

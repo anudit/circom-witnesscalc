@@ -83,8 +83,6 @@ for arg in "${library_paths[@]}"; do
 done
 
 pushd "${script_dir}" > /dev/null
-# to build with debug vm2 execution, run:
-# cargo build --release --features "debug_vm2"
 cargo build --release
 popd > /dev/null
 
@@ -101,21 +99,20 @@ function test_circuit() {
   local circuit_bytecode_path="${workdir}/${circuit_name}_bc2.wcd"
   local witness_path="${workdir}/${circuit_name}.wtns"
   local r1cs_path="${workdir}/${circuit_name}.r1cs"
+  local sym_path="${workdir}/${circuit_name}.sym"
   local cvm_path="${workdir}/${circuit_name}_cvm/${circuit_name}.cvm"
 
   pushd "$workdir" > /dev/null
 
   # Run Circom to generate assembly file.
-  time circom --r1cs --cvm --wasm --cvm_multi_assign "${include_args[@]}" "$circuit_path"
+  circom --r1cs --sym --cvm --wasm "${include_args[@]}" "$circuit_path"
 
   # run commands from the project directory
   pushd "${script_dir}" > /dev/null
 
   time target/release/cvm-compile \
-    "$cvm_path" -o "${circuit_bytecode_path}"
-
-  time target/release/calc-witness \
-    "${circuit_bytecode_path}" "${inputs_path}" "${witness_path}"
+    "$cvm_path" "$sym_path" "${circuit_bytecode_path}" \
+    --wtns "${witness_path}" --inputs "${inputs_path}" \
 
   popd > /dev/null
 
@@ -148,8 +145,22 @@ if [ $# -gt 0 ]; then
     test_circuit "${circuit_path}"
   done
 else
-  for circuit_path in "${script_dir}"/test_circuits/*.circom; do
-    circuit_path=$(realpath "$circuit_path")
-    test_circuit "${circuit_path}"
-  done
+	for circuit_path in "${script_dir}"/test_circuits/*.circom; do
+		circuit_path=$(realpath "$circuit_path")
+
+		mode=$(check_witnesscalc_graph "$circuit_path")
+
+		echo "file: ${circuit_path}"
+		echo "mode: ${mode}"
+
+		case "$mode" in
+			graph-vm)
+				echo "Processing $circuit_path ($mode)"
+				test_circuit "${circuit_path}"
+				;;
+			*)
+				echo "Skipped $circuit_path (no -vm directive)"
+				;;
+		esac
+	done
 fi

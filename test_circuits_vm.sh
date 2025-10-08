@@ -42,7 +42,7 @@ print_usage() {
     echo "  $0 test_circuits/circuit1.circom"
 }
 
-declare -a library_paths
+declare -a library_paths=()
 
 while getopts ":p:l:h" opt; do
   case $opt in
@@ -78,7 +78,7 @@ fi
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 echo "script dir ${script_dir}"
 
-if [ ${#library_paths} -eq 0 ]; then
+if [ ${#library_paths[@]} -eq 0 ]; then
     library_paths+=("${script_dir}/test_deps/circomlib/circuits")
 fi
 
@@ -156,6 +156,8 @@ function test_circuit() {
 	popd > /dev/null
 }
 
+source "${script_dir}/check_witnesscalc.sh"
+
 if [ $# -gt 0 ]; then
 	for arg in "$@"; do
 		circuit_path=$(realpath "$arg")
@@ -168,6 +170,20 @@ if [ $# -gt 0 ]; then
 else
 	for circuit_path in "${script_dir}"/test_circuits/*.circom; do
 		circuit_path=$(realpath "$circuit_path")
-		test_circuit "${circuit_path}"
+
+		mode=$(check_witnesscalc_graph "$circuit_path")
+
+		echo "file: ${circuit_path}"
+		echo "mode: ${mode}"
+
+		case "$mode" in
+			graph|none)
+				echo "Processing $circuit_path ($mode)"
+				test_circuit "${circuit_path}"
+				;;
+			*)
+				echo "Skipped $circuit_path (includes -vm directive)"
+				;;
+		esac
 	done
 fi

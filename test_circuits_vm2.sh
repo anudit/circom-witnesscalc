@@ -2,10 +2,12 @@
 
 set -eux
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${script_dir}/check_witnesscalc.sh"
+
 required_commands=(circom snarkjs cargo node cmp)
 
-RED='\033[0;31m'
-NC='\033[0m' # No Color
+VM_TAG="vm2"
 
 for cmd in "${required_commands[@]}"; do
 	if ! command -v "$cmd" &> /dev/null; then
@@ -42,7 +44,7 @@ print_usage() {
 
 declare -a library_paths
 
-while getopts ":p:l:h" opt; do
+while getopts ":l:h" opt; do
   case $opt in
     h)
         print_usage
@@ -64,9 +66,6 @@ done
 
 # Shift past the named options to access positional arguments
 shift $((OPTIND - 1))
-
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-echo "script dir ${script_dir}"
 
 if [ ${#library_paths} -eq 0 ]; then
     library_paths+=("${script_dir}/test_deps/circomlib/circuits")
@@ -91,8 +90,10 @@ popd > /dev/null
 function test_circuit() {
   local circuit_path=$1
   echo "Running $circuit_path"
-  local circuit_name="$(basename "$circuit_path")" && circuit_name="${circuit_name%%.*}"
-  local inputs_path="$(dirname "$circuit_path")/${circuit_name}_inputs.json"
+  local circuit_name
+  circuit_name="$(basename "$circuit_path")" && circuit_name="${circuit_name%%.*}"
+  local inputs_path
+  inputs_path="$(dirname "$circuit_path")/${circuit_name}_inputs.json"
   pwd
   if [ ! -f "$inputs_path" ]; then
     echo -e "${RED}Inputs file not found at $inputs_path${NC}"
@@ -148,8 +149,14 @@ if [ $# -gt 0 ]; then
     test_circuit "${circuit_path}"
   done
 else
-  for circuit_path in "${script_dir}"/test_circuits/*.circom; do
-    circuit_path=$(realpath "$circuit_path")
-    test_circuit "${circuit_path}"
-  done
+	for circuit_path in "${script_dir}"/test_circuits/*.circom; do
+		circuit_path=$(realpath "$circuit_path")
+
+		if ! circuit_is_enabled "$circuit_path" "${VM_TAG}"; then
+			echo -e "${YELLOW}Skipped $circuit_path (not enabled for ${VM_TAG})${NC}"
+			continue
+		fi
+
+		test_circuit "${circuit_path}"
+	done
 fi

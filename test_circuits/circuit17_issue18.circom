@@ -1,4 +1,3 @@
-// witnesscalc: -graph -vm
 pragma circom 2.1.9;
 
 template Main() {

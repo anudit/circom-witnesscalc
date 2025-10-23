@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 use std::error::Error;
+#[cfg(feature = "parallel_components")]
 use std::sync::{Arc, Condvar, Mutex, OnceLock, RwLock};
+#[cfg(not(feature = "parallel_components"))]
+use std::sync::{Arc, OnceLock, RwLock};
 use bitvec::order::Lsb0;
 use bitvec::vec::BitVec;
 use crate::field::{Field, FieldOperations, FieldOps};
@@ -1417,6 +1420,7 @@ fn get_current_context<'a, T: FieldOps>(
     }
 }
 
+#[cfg(feature = "parallel_components")]
 fn spawn_component_execution<'scope, 'env, F, T: FieldOps>(
     scope: &'scope std::thread::Scope<'scope, 'env>,
     circuit: &'env Circuit<T>,
@@ -1451,23 +1455,36 @@ where
         started = cvar.wait(started).unwrap();
     }
 }
-
 pub fn execute<F, T: FieldOps>(
     circuit: &Circuit<T>, ff: &F,
     component_tree: &mut Component<T>) -> Result<(), Box<dyn Error + Sync + Send>>
 where
     for <'a> &'a F: FieldOperations<Type = T> {
 
-    std::thread::scope(|scope| -> Result<(), Box<dyn Error + Sync + Send>> {
+    std::thread::scope(|_scope| -> Result<(), Box<dyn Error + Sync + Send>> {
+    #[cfg(feature = "parallel_components")]
+    let scope = _scope;
     #[cfg(feature = "debug_vm2")]
     {
         let template_name = &circuit.templates[component_tree.template_id].name;
         println!("execute {}[{}]", template_name, component_tree.signals_start);
     }
+    #[cfg(feature = "parallel_components")]
     component_tree.components.iter_mut()
         .filter_map(|x| x.as_mut())
         .filter(|x| x.read().unwrap().number_of_inputs == 0)
         .for_each(|c| spawn_component_execution(scope, circuit, ff, c.clone()));
+
+    #[cfg(not(feature = "parallel_components"))]
+    component_tree.components.iter_mut()
+        .filter_map(|x| x.as_mut())
+        .filter(|x| x.read().unwrap().number_of_inputs == 0)
+        .try_for_each(|c| -> Result<(), Box<dyn Error + Sync + Send>> {
+            let mut component = c.write()
+                .map_err(|e| format!("Failed to lock component: {}", e))?;
+            execute(circuit, ff, &mut component)?;
+            Ok(())
+        })?;
 
     let mut ip: usize = 0;
     let mut vm = VM::<T>::new();
@@ -1665,10 +1682,15 @@ where
                                 cmp_idx);
                         }
 
+                        #[cfg(feature = "parallel_components")]
                         spawn_component_execution(scope, circuit, ff, c.clone());
-                        // let result = handle.join().unwrap();
 
-                        // execute(circuit, ff, &mut c.write().unwrap())?;
+                        #[cfg(not(feature = "parallel_components"))]
+                        {
+                            let mut component = c.write()
+                                .map_err(|e| format!("Failed to lock component: {}", e))?;
+                            execute(circuit, ff, &mut component)?;
+                        }
                     }
                 }
             }
@@ -1706,7 +1728,15 @@ where
                                     "StoreCmpSignalCntCheck: Run component {}",
                                     cmp_idx);
                             }
+                            #[cfg(feature = "parallel_components")]
                             spawn_component_execution(scope, circuit, ff, c.clone());
+
+                            #[cfg(not(feature = "parallel_components"))]
+                            {
+                                let mut component = c.write()
+                                    .map_err(|e| format!("Failed to lock component: {}", e))?;
+                                execute(circuit, ff, &mut component)?;
+                            }
                         }
                     }
                 }
@@ -2335,9 +2365,18 @@ where
                             "CopyCmpInputsFromSelf: Run component {}",
                             cmp_idx);
                     }
+                    #[cfg(feature = "parallel_components")]
                     spawn_component_execution(
                         scope, circuit, ff,
                         component_tree.components[cmp_idx].as_ref().unwrap().clone());
+
+                    #[cfg(not(feature = "parallel_components"))]
+                    {
+                        let c = component_tree.components[cmp_idx].as_ref().unwrap();
+                        let mut component = c.write()
+                            .map_err(|e| format!("Failed to lock component: {}", e))?;
+                        execute(circuit, ff, &mut component)?;
+                    }
                 }
             }
             OpCode::CopyCmpInputsFromCmp => {
@@ -2427,11 +2466,20 @@ where
                             dst_cmp_idx
                         );
                     }
+                    #[cfg(feature = "parallel_components")]
                     spawn_component_execution(
                         scope, circuit, ff,
                         component_tree.components[dst_cmp_idx]
                             .as_ref().unwrap()
                             .clone());
+
+                    #[cfg(not(feature = "parallel_components"))]
+                    {
+                        let c = component_tree.components[dst_cmp_idx].as_ref().unwrap();
+                        let mut component = c.write()
+                            .map_err(|e| format!("Failed to lock component: {}", e))?;
+                        execute(circuit, ff, &mut component)?;
+                    }
                 }
 
             }

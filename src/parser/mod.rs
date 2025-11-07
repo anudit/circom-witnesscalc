@@ -673,6 +673,54 @@ fn parse_statement(input: &mut &str) -> ModalResult<Statement> {
                 size,
                 mode: CmpInputMode::UpdateCounterAndCheck,
             }),
+            "mset_cmp_input_from_memory" => (
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand))
+            .map(|(dst_cmp_idx, dst_sig_idx, sig_idx, size)| Statement::CopyCmpInputFromMemory {
+                dst_cmp_idx,
+                dst_sig_idx,
+                sig_idx,
+                size,
+                mode: CmpInputMode::None,
+            }),
+        "mset_cmp_input_from_memory_cnt" => (
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand))
+            .map(|(dst_cmp_idx, dst_sig_idx, sig_idx, size)| Statement::CopyCmpInputFromMemory {
+                dst_cmp_idx,
+                dst_sig_idx,
+                sig_idx,
+                size,
+                mode: CmpInputMode::UpdateCounter,
+            }),
+        "mset_cmp_input_from_memory_run" => (
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand))
+            .map(|(dst_cmp_idx, dst_sig_idx, sig_idx, size)| Statement::CopyCmpInputFromMemory {
+                dst_cmp_idx,
+                dst_sig_idx,
+                sig_idx,
+                size,
+                mode: CmpInputMode::Run,
+            }),
+        "mset_cmp_input_from_memory_cnt_check" => (
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand))
+            .map(|(dst_cmp_idx, dst_sig_idx, sig_idx, size)| Statement::CopyCmpInputFromMemory {
+                dst_cmp_idx,
+                dst_sig_idx,
+                sig_idx,
+                size,
+                mode: CmpInputMode::UpdateCounterAndCheck,
+            }),
         "mset_signal" => (
             preceded(space1, parse_i64_operand),
             preceded(space1, parse_i64_operand),
@@ -748,6 +796,18 @@ fn parse_statement(input: &mut &str) -> ModalResult<Statement> {
             preceded(space1, parse_i64_operand))
             .map(
                 |(dst, src, size)| Statement::FfMStore { dst, src, size }),
+                        "ff.mstore_from_signal" => (
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand))
+            .map(
+                |(dst, addr, size)| Statement::FfMStoreFromSignal { dst, addr, size }),
+        "ff.mstore_from_cmp_signal" => (
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand))
+            .map(
+                |(dst, addr, size)| Statement::FfMStoreFromCmpSignal { dst, addr, size }),
         "ff.return" => preceded(space1, parse_ff_expression)
             .map(|value| Statement::FfReturn { value }),
         "ff.mcall" => {
@@ -871,10 +931,19 @@ fn parse_i64_expression(input: &mut &str) -> ModalResult<I64Expr> {
                 .map(|(op1, op2)| I64Expr::Lte(Box::new(op1), Box::new(op2))),
             "i64.load" => preceded(space1, parse_i64_operand)
                 .map(I64Expr::Load),
+            "i64.eq" => (preceded(space1, parse_i64_operand), preceded(space1, parse_i64_operand))
+                .map(|(op1, op2)| I64Expr::Eq(op1, op2)),
+            "i64.lt" => (preceded(space1, parse_i64_expression), preceded(space1, parse_i64_expression))
+                .map(|(op1, op2)| I64Expr::Lt(Box::new(op1), Box::new(op2))),
             "i64.wrap_ff" => preceded(space1, parse_ff_expr)
                 .map(|expr| I64Expr::Wrap(Box::new(expr))),
             "get_template_id" => preceded(space1, parse_i64_operand)
                 .map(I64Expr::GetTemplateId),
+            "get_template_signal_type" => (
+                    preceded(space1, parse_i64_operand),
+                    preceded(space1, parse_i64_operand),
+                )
+                .map(|(template_id, signal_id)| I64Expr::GetTemplateSignalType(template_id, signal_id)),
             "get_template_signal_position" => (
                     preceded(space1, parse_i64_operand),
                     preceded(space1, parse_i64_operand),
@@ -892,6 +961,28 @@ fn parse_i64_expression(input: &mut &str) -> ModalResult<I64Expr> {
                 )
                 .map(|(template_id, signal_id, dimension_index)| 
                     I64Expr::GetTemplateSignalDimension(template_id, signal_id, dimension_index)),
+"get_bus_signal_position" => (
+                    preceded(space1, parse_i64_operand),
+                    preceded(space1, parse_i64_operand),
+                )
+                .map(|(bus_id, signal_id)| I64Expr::GetBusSignalPosition(bus_id, signal_id)),
+            "get_bus_signal_size" => (
+                    preceded(space1, parse_i64_operand),
+                    preceded(space1, parse_i64_operand),
+                )
+                .map(|(bus_id, signal_id)| I64Expr::GetBusSignalSize(bus_id, signal_id)),
+            "get_bus_signal_type" => (
+                    preceded(space1, parse_i64_operand),
+                    preceded(space1, parse_i64_operand),
+                )
+                .map(|(bus_id, signal_id)| I64Expr::GetBusSignalType(bus_id, signal_id)),
+            "get_bus_signal_dimension" => (
+                    preceded(space1, parse_i64_operand),
+                    preceded(space1, parse_i64_operand),
+                    preceded(space1, parse_i64_operand),
+                )
+                .map(|(bus_id, signal_id, dimension_index)| 
+                    I64Expr::GetBusSignalDimension(bus_id, signal_id, dimension_index)),
             _ => fail::<_, I64Expr, _>,
         },
         // Try to parse as a literal
@@ -2364,6 +2455,16 @@ x";
             Box::new(I64Expr::Literal(2)),
             Box::new(I64Expr::Variable("x_9".to_string()))
         );
+        let i64_expr = consume_parse_result(parse_i64_expression.parse(input));
+        assert_eq!(want, i64_expr);
+
+
+        let input = "i64.eq x_22 0";
+        let want = I64Expr::Eq(
+            I64Operand::Variable("x_22".to_string()),
+            I64Operand::Literal(0)
+        );
+
         let i64_expr = consume_parse_result(parse_i64_expression.parse(input));
         assert_eq!(want, i64_expr);
 

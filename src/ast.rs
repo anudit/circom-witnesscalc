@@ -287,6 +287,16 @@ pub enum Statement {
         src: I64Operand,
         size: I64Operand,
     },
+    FfMStoreFromSignal {
+        dst: I64Operand,
+        addr: I64Operand,
+        size: I64Operand,
+    },
+    FfMStoreFromCmpSignal {
+        dst: I64Operand,
+        addr: I64Operand,
+        size: I64Operand,
+    },
     CopySignalFromCmp {
         dst_idx: I64Operand,
         cmp_idx: I64Operand,
@@ -315,6 +325,13 @@ pub enum Statement {
         dst_sig_idx: I64Operand,
         src_cmp_idx: I64Operand,
         src_sig_idx: I64Operand,
+        size: I64Operand,
+        mode: CmpInputMode,
+    },
+    CopyCmpInputFromMemory {
+        dst_cmp_idx: I64Operand,
+        dst_sig_idx: I64Operand,
+        sig_idx: I64Operand,
         size: I64Operand,
         mode: CmpInputMode,
     },
@@ -426,13 +443,20 @@ pub enum I64Expr {
     Add(Box<I64Expr>, Box<I64Expr>),
     Sub(Box<I64Expr>, Box<I64Expr>),
     Mul(Box<I64Expr>, Box<I64Expr>),
+    Eq(I64Operand, I64Operand),
+    Lt(Box<I64Expr>, Box<I64Expr>),
+    Lte(Box<I64Expr>, Box<I64Expr>),
     Load(I64Operand),
     Wrap(Box<FfExpr>),
-    Lte(Box<I64Expr>, Box<I64Expr>),
     GetTemplateId(I64Operand),
     GetTemplateSignalPosition(I64Operand, I64Operand), // template_id, signal_id
     GetTemplateSignalSize(I64Operand, I64Operand), // template_id, signal_id
+    GetTemplateSignalType(I64Operand, I64Operand),     // template_id, input/output signal_id
     GetTemplateSignalDimension(I64Operand, I64Operand, I64Operand), // template_id, signal_id, dimension_index
+    GetBusSignalPosition(I64Operand, I64Operand),                   // template_id, signal_id
+    GetBusSignalSize(I64Operand, I64Operand),                       // template_id, signal_id
+    GetBusSignalType(I64Operand, I64Operand),                       // template_id, signal_id
+    GetBusSignalDimension(I64Operand, I64Operand, I64Operand), // template_id, signal_id, dimension_index
 }
 
 #[cfg_attr(test, derive(PartialEq, Debug))]

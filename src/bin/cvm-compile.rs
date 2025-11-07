@@ -483,6 +483,16 @@ where
             i64_expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpI64Mul as u8);
         }
+        I64Expr::Eq(lhs, rhs) => {
+            operand_i64(ctx, rhs);
+            operand_i64(ctx, lhs);
+            ctx.code.push(OpCode::OpI64Eq as u8);
+        }
+        I64Expr::Lt(lhs, rhs) => {
+            i64_expression(ctx, ff, rhs)?;
+            i64_expression(ctx, ff, lhs)?;
+            ctx.code.push(OpCode::OpI64Lt as u8);
+        }
         I64Expr::Lte(lhs, rhs) => {
             i64_expression(ctx, ff, rhs)?;
             i64_expression(ctx, ff, lhs)?;
@@ -510,11 +520,37 @@ where
             operand_i64(ctx, template_id);
             ctx.code.push(OpCode::GetTemplateSignalSize as u8);
         }
+        I64Expr::GetTemplateSignalType(template_id, signal_id) => {
+            operand_i64(ctx, signal_id);
+            operand_i64(ctx, template_id);
+            ctx.code.push(OpCode::GetTemplateSignalType as u8);
+        }
         I64Expr::GetTemplateSignalDimension(template_id, signal_id, dimension_index) => {
             operand_i64(ctx, dimension_index);
             operand_i64(ctx, signal_id);
             operand_i64(ctx, template_id);
             ctx.code.push(OpCode::GetTemplateSignalDimension as u8);
+        }
+I64Expr::GetBusSignalPosition(template_id, signal_id) => {
+            operand_i64(ctx, signal_id);
+            operand_i64(ctx, template_id);
+            ctx.code.push(OpCode::GetBusSignalPosition as u8);
+        }
+        I64Expr::GetBusSignalSize(template_id, signal_id) => {
+            operand_i64(ctx, signal_id);
+            operand_i64(ctx, template_id);
+            ctx.code.push(OpCode::GetBusSignalSize as u8);
+        }
+        I64Expr::GetBusSignalType(template_id, signal_id) => {
+            operand_i64(ctx, signal_id);
+            operand_i64(ctx, template_id);
+            ctx.code.push(OpCode::GetBusSignalType as u8);
+        }
+        I64Expr::GetBusSignalDimension(template_id, signal_id, dimension_index) => {
+            operand_i64(ctx, signal_id);
+            operand_i64(ctx, template_id);
+            operand_i64(ctx, dimension_index);
+            ctx.code.push(OpCode::GetBusSignalDimension as u8);
         }
     }
     Ok(())
@@ -813,6 +849,18 @@ where
             operand_i64(ctx, size);
             ctx.code.push(OpCode::FfMStore as u8);
         },
+        Statement::FfMStoreFromSignal { dst, addr, size } => {
+            operand_i64(ctx, dst);
+            operand_i64(ctx, addr);
+            operand_i64(ctx, size);
+            ctx.code.push(OpCode::FfMStoreFromSignal as u8);
+        }
+        Statement::FfMStoreFromCmpSignal { dst, addr, size } => {
+            operand_i64(ctx, dst);
+            operand_i64(ctx, addr);
+            operand_i64(ctx, size);
+            ctx.code.push(OpCode::FfMStoreFromCmpSignal as u8);
+        }
         Statement::CopyCmpInputFromCmp { dst_cmp_idx, dst_sig_idx, src_cmp_idx, src_sig_idx, size, mode } => {
             operand_i64(ctx, size);
             operand_i64(ctx, src_sig_idx);
@@ -830,6 +878,28 @@ where
             ctx.code.push(OpCode::CopyCmpInputsFromCmp as u8);
             ctx.code.push(flags);
         },
+        Statement::CopyCmpInputFromMemory {
+            dst_cmp_idx,
+            dst_sig_idx,
+            sig_idx,
+            size,
+            mode,
+        } => {
+            operand_i64(ctx, size);
+            operand_i64(ctx, sig_idx);
+            operand_i64(ctx, dst_sig_idx);
+            operand_i64(ctx, dst_cmp_idx);
+
+            let flags = match mode {
+                ast::CmpInputMode::None => 0b00u8,
+                ast::CmpInputMode::UpdateCounter => 0b01u8,
+                ast::CmpInputMode::Run => 0b10u8,
+                ast::CmpInputMode::UpdateCounterAndCheck => 0b11u8,
+            };
+
+            ctx.code.push(OpCode::CopyCmpInputsFromMemory as u8);
+            ctx.code.push(flags);
+        }
         Statement::CopySignalFromCmp { dst_idx, cmp_idx, cmp_sig_idx, size } => {
             operand_i64(ctx, size);
             operand_i64(ctx, cmp_sig_idx);

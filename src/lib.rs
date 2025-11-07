@@ -484,6 +484,8 @@ fn witness<T: FieldOps>(
 
         match signals[idx] {
             Some(s) => result.push(s),
+            // To fix tests with missing signals
+            // None => result.push(T::zero()),
             None => return Err(format!("witness signal isnot set: {}", idx).into()),
         }
     }

@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 use std::error::Error;
+use ark_ff::Zero;
+
 use crate::field::{Field, FieldOperations, FieldOps};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -276,6 +278,7 @@ pub enum OpCode {
     GetBusSignalDimension = 69,
     OpI64Gt = 71,
     OpI64Gte = 72,
+    OpI64Eqz = 73,
 }
 
 pub struct Component {
@@ -1233,6 +1236,9 @@ where
         OpCode::OpI64Eq => {
             output.push_str("OpI64Eq");
         }
+        OpCode::OpI64Eqz => {
+            output.push_str("OpI64Eqz");
+        }
         OpCode::OpShr => {
             output.push_str("OpShr");
         }
@@ -2146,6 +2152,10 @@ where
                 let rhs = vm.pop_i64()?;
                 let lhs = vm.pop_i64()?;
                 vm.push_i64(if lhs == rhs { 1 } else { 0 });
+            }
+            OpCode::OpI64Eqz => {
+                let arg = vm.pop_i64()?;
+                vm.push_i64(if arg.is_zero() { 1 } else { 0 });
             }
             OpCode::OpShr => {
                 let lhs = vm.pop_ff()?;

@@ -234,12 +234,26 @@ fn parse_inputs(input: &mut &str) -> ModalResult<Vec<Input>> {
 }
 
 fn parse_i64_literal(input: &mut &str) -> ModalResult<i64> {
-    preceded(
-        literal("i64."),
-        cut_err(digit1.parse_to()
-            .context(StrContext::Label("i64 literal")))
-            .context(StrContext::Expected(StrContextValue::Description("valid i64 value"))),)
-        .parse_next(input)
+    alt((
+        preceded(
+            literal("i64."),
+            cut_err(
+                digit1
+                    .parse_to()
+                    .context(StrContext::Label("i64 literal"))
+                    .context(StrContext::Expected(StrContextValue::Description(
+                        "valid i64 value after i64.",
+                    ))),
+            ),
+        ),
+        digit1
+            .parse_to()
+            .context(StrContext::Label("i64 literal"))
+            .context(StrContext::Expected(StrContextValue::Description(
+                "valid i64 value",
+            ))),
+    ))
+    .parse_next(input)
 }
 
 fn parse_ff_literal(input: &mut &str) -> ModalResult<BigUint> {
@@ -796,7 +810,7 @@ fn parse_statement(input: &mut &str) -> ModalResult<Statement> {
             preceded(space1, parse_i64_operand))
             .map(
                 |(dst, src, size)| Statement::FfMStore { dst, src, size }),
-                        "ff.mstore_from_signal" => (
+        "ff.mstore_from_signal" => (
             preceded(space1, parse_i64_operand),
             preceded(space1, parse_i64_operand),
             preceded(space1, parse_i64_operand))
@@ -805,9 +819,10 @@ fn parse_statement(input: &mut &str) -> ModalResult<Statement> {
         "ff.mstore_from_cmp_signal" => (
             preceded(space1, parse_i64_operand),
             preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),    
             preceded(space1, parse_i64_operand))
             .map(
-                |(dst, addr, size)| Statement::FfMStoreFromCmpSignal { dst, addr, size }),
+                |(dst, src, addr, size)| Statement::FfMStoreFromCmpSignal { dst, src, addr, size }),
         "ff.return" => preceded(space1, parse_ff_expression)
             .map(|value| Statement::FfReturn { value }),
         "ff.mcall" => {
@@ -933,6 +948,8 @@ fn parse_i64_expression(input: &mut &str) -> ModalResult<I64Expr> {
                 .map(I64Expr::Load),
             "i64.eq" => (preceded(space1, parse_i64_operand), preceded(space1, parse_i64_operand))
                 .map(|(op1, op2)| I64Expr::Eq(op1, op2)),
+            "i64.eqz" => preceded(space1, parse_i64_operand)
+                .map(I64Expr::Eqz),
             "i64.lt" => (preceded(space1, parse_i64_expression), preceded(space1, parse_i64_expression))
                 .map(|(op1, op2)| I64Expr::Lt(Box::new(op1), Box::new(op2))),
             "i64.ge" => (preceded(space1, parse_i64_expression), preceded(space1, parse_i64_expression))

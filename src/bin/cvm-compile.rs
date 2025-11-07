@@ -488,6 +488,10 @@ where
             operand_i64(ctx, lhs);
             ctx.code.push(OpCode::OpI64Eq as u8);
         }
+        I64Expr::Eqz(arg) => {
+            operand_i64(ctx, arg);
+            ctx.code.push(OpCode::OpI64Eqz as u8);
+        }
         I64Expr::Lt(lhs, rhs) => {
             i64_expression(ctx, ff, rhs)?;
             i64_expression(ctx, ff, lhs)?;
@@ -865,8 +869,9 @@ where
             operand_i64(ctx, size);
             ctx.code.push(OpCode::FfMStoreFromSignal as u8);
         }
-        Statement::FfMStoreFromCmpSignal { dst, addr, size } => {
+        Statement::FfMStoreFromCmpSignal { dst, addr, src, size } => {
             operand_i64(ctx, dst);
+            operand_i64(ctx, src);
             operand_i64(ctx, addr);
             operand_i64(ctx, size);
             ctx.code.push(OpCode::FfMStoreFromCmpSignal as u8);

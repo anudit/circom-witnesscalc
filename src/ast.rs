@@ -294,6 +294,7 @@ pub enum Statement {
     },
     FfMStoreFromCmpSignal {
         dst: I64Operand,
+        src: I64Operand,
         addr: I64Operand,
         size: I64Operand,
     },
@@ -444,6 +445,7 @@ pub enum I64Expr {
     Sub(Box<I64Expr>, Box<I64Expr>),
     Mul(Box<I64Expr>, Box<I64Expr>),
     Eq(I64Operand, I64Operand),
+    Eqz(I64Operand),
     Lt(Box<I64Expr>, Box<I64Expr>),
     Lte(Box<I64Expr>, Box<I64Expr>),
     Gt(Box<I64Expr>, Box<I64Expr>),

@@ -935,6 +935,10 @@ fn parse_i64_expression(input: &mut &str) -> ModalResult<I64Expr> {
                 .map(|(op1, op2)| I64Expr::Eq(op1, op2)),
             "i64.lt" => (preceded(space1, parse_i64_expression), preceded(space1, parse_i64_expression))
                 .map(|(op1, op2)| I64Expr::Lt(Box::new(op1), Box::new(op2))),
+            "i64.ge" => (preceded(space1, parse_i64_expression), preceded(space1, parse_i64_expression))
+                .map(|(op1, op2)| I64Expr::Gte(Box::new(op1), Box::new(op2))),
+            "i64.gt" => (preceded(space1, parse_i64_expression), preceded(space1, parse_i64_expression))
+                .map(|(op1, op2)| I64Expr::Gt(Box::new(op1), Box::new(op2))),
             "i64.wrap_ff" => preceded(space1, parse_ff_expr)
                 .map(|expr| I64Expr::Wrap(Box::new(expr))),
             "get_template_id" => preceded(space1, parse_i64_operand)

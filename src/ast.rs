@@ -446,6 +446,8 @@ pub enum I64Expr {
     Eq(I64Operand, I64Operand),
     Lt(Box<I64Expr>, Box<I64Expr>),
     Lte(Box<I64Expr>, Box<I64Expr>),
+    Gt(Box<I64Expr>, Box<I64Expr>),
+    Gte(Box<I64Expr>, Box<I64Expr>),
     Load(I64Operand),
     Wrap(Box<FfExpr>),
     GetTemplateId(I64Operand),

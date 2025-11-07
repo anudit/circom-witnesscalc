@@ -498,6 +498,16 @@ where
             i64_expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpI64Lte as u8);
         }
+        I64Expr::Gt(lhs, rhs) => {
+            i64_expression(ctx, ff, rhs)?;
+            i64_expression(ctx, ff, lhs)?;
+            ctx.code.push(OpCode::OpI64Gt as u8);
+        }
+        I64Expr::Gte(lhs, rhs) => {
+            i64_expression(ctx, ff, rhs)?;
+            i64_expression(ctx, ff, lhs)?;
+            ctx.code.push(OpCode::OpI64Gte as u8);
+        }
         I64Expr::Load(addr) => {
             operand_i64(ctx, addr);
             ctx.code.push(OpCode::I64Load as u8);

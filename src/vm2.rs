@@ -274,6 +274,8 @@ pub enum OpCode {
     FfMStoreFromCmpSignal = 67,
     GetBusSignalType = 68,
     GetBusSignalDimension = 69,
+    OpI64Gt = 71,
+    OpI64Gte = 72,
 }
 
 pub struct Component {
@@ -1219,6 +1221,12 @@ where
         OpCode::OpI64Lte => {
             output.push_str("OpI64Lte");
         }
+        OpCode::OpI64Gt => {
+            output.push_str("OpI64Gt");
+        }
+        OpCode::OpI64Gte => {
+            output.push_str("OpI64Gte");
+        }
         OpCode::I64WrapFf => {
             output.push_str("I64WrapFf");
         }
@@ -1843,7 +1851,7 @@ where
                     );
                 }
             }
-OpCode::FfMStoreFromSignal => {
+            OpCode::FfMStoreFromSignal => {
                 let size = vm.pop_usize()?;
                 let sig_idx = vm.pop_usize()?;
                 let dst_addr = vm.pop_usize()?;
@@ -2067,8 +2075,6 @@ OpCode::FfMStoreFromSignal => {
             OpCode::OpLt => {
                 let lhs = vm.pop_ff()?;
                 let rhs = vm.pop_ff()?;
-                // let rhs = vm.pop_ff()?;
-                // let lhs = vm.pop_ff()?;
                 let result = ff.lt(lhs, rhs);
                 #[cfg(feature = "debug_vm2")]
                 {
@@ -2116,6 +2122,16 @@ OpCode::FfMStoreFromSignal => {
                 let lhs = vm.pop_i64()?;
                 let rhs = vm.pop_i64()?;
                 vm.push_i64(if lhs <= rhs { 1 } else { 0 });
+            }
+            OpCode::OpI64Gt => {
+                let lhs = vm.pop_i64()?;
+                let rhs = vm.pop_i64()?;
+                vm.push_i64(if lhs > rhs { 1 } else { 0 });
+            }
+            OpCode::OpI64Gte => {
+                let lhs = vm.pop_i64()?;
+                let rhs = vm.pop_i64()?;
+                vm.push_i64(if lhs >= rhs { 1 } else { 0 });
             }
             OpCode::I64WrapFf => {
                 let ff_val = vm.pop_ff()?;

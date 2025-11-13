@@ -234,25 +234,17 @@ fn parse_inputs(input: &mut &str) -> ModalResult<Vec<Input>> {
 }
 
 fn parse_i64_literal(input: &mut &str) -> ModalResult<i64> {
-    alt((
-        preceded(
-            literal("i64."),
-            cut_err(
-                digit1
-                    .parse_to()
-                    .context(StrContext::Label("i64 literal"))
-                    .context(StrContext::Expected(StrContextValue::Description(
-                        "valid i64 value after i64.",
-                    ))),
-            ),
+    preceded(
+        literal("i64."),
+        cut_err(
+            digit1
+                .parse_to()
+                .context(StrContext::Label("i64 literal"))
+                .context(StrContext::Expected(StrContextValue::Description(
+                    "valid i64 value after i64.",
+                ))),
         ),
-        digit1
-            .parse_to()
-            .context(StrContext::Label("i64 literal"))
-            .context(StrContext::Expected(StrContextValue::Description(
-                "valid i64 value",
-            ))),
-    ))
+    )
     .parse_next(input)
 }
 
@@ -687,7 +679,7 @@ fn parse_statement(input: &mut &str) -> ModalResult<Statement> {
                 size,
                 mode: CmpInputMode::UpdateCounterAndCheck,
             }),
-            "mset_cmp_input_from_memory" => (
+        "mset_cmp_input_from_memory" => (
             preceded(space1, parse_i64_operand),
             preceded(space1, parse_i64_operand),
             preceded(space1, parse_i64_operand),
@@ -982,7 +974,7 @@ fn parse_i64_expression(input: &mut &str) -> ModalResult<I64Expr> {
                 )
                 .map(|(template_id, signal_id, dimension_index)| 
                     I64Expr::GetTemplateSignalDimension(template_id, signal_id, dimension_index)),
-"get_bus_signal_position" => (
+            "get_bus_signal_position" => (
                     preceded(space1, parse_i64_operand),
                     preceded(space1, parse_i64_operand),
                 )

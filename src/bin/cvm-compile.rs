@@ -545,7 +545,7 @@ where
             operand_i64(ctx, template_id);
             ctx.code.push(OpCode::GetTemplateSignalDimension as u8);
         }
-I64Expr::GetBusSignalPosition(template_id, signal_id) => {
+        I64Expr::GetBusSignalPosition(template_id, signal_id) => {
             operand_i64(ctx, signal_id);
             operand_i64(ctx, template_id);
             ctx.code.push(OpCode::GetBusSignalPosition as u8);

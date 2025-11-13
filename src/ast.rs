@@ -455,11 +455,11 @@ pub enum I64Expr {
     GetTemplateId(I64Operand),
     GetTemplateSignalPosition(I64Operand, I64Operand), // template_id, signal_id
     GetTemplateSignalSize(I64Operand, I64Operand), // template_id, signal_id
-    GetTemplateSignalType(I64Operand, I64Operand),     // template_id, input/output signal_id
+    GetTemplateSignalType(I64Operand, I64Operand), // template_id, input/output signal_id
     GetTemplateSignalDimension(I64Operand, I64Operand, I64Operand), // template_id, signal_id, dimension_index
-    GetBusSignalPosition(I64Operand, I64Operand),                   // template_id, signal_id
-    GetBusSignalSize(I64Operand, I64Operand),                       // template_id, signal_id
-    GetBusSignalType(I64Operand, I64Operand),                       // template_id, signal_id
+    GetBusSignalPosition(I64Operand, I64Operand), // template_id, signal_id
+    GetBusSignalSize(I64Operand, I64Operand), // template_id, signal_id
+    GetBusSignalType(I64Operand, I64Operand), // template_id, signal_id
     GetBusSignalDimension(I64Operand, I64Operand, I64Operand), // template_id, signal_id, dimension_index
 }
 

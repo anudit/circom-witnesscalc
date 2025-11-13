@@ -29,10 +29,11 @@ if [ ! -d "$workdir" ]; then
 fi
 
 print_usage() {
-    echo "Usage: $0 [-h] [-l <inlcude_path>] [file1 ...]"
+    echo "Usage: $0 [-h] [-l <inlcude_path>] [-i <inputs_path>] [file1 ...]"
     echo
     echo "Options:"
     echo "  -l <include_path>      Path to include directory. Can be specified multiple times"
+    echo "  -i <inputs_path>       Path to custom inputs JSON file. Requires exactly one circuit file argument"
     echo "  -h                     Print this usage and exit"
     echo
     echo "Positional Arguments:"
@@ -40,11 +41,13 @@ print_usage() {
     echo
     echo "Examples:"
     echo "  $0 test_circuits/circuit1.circom"
+    echo "  $0 -i custom_inputs.json test_circuits/circuit1.circom"
 }
 
 declare -a library_paths
+custom_inputs_path=""
 
-while getopts ":l:h" opt; do
+while getopts ":l:i:h" opt; do
   case $opt in
     h)
         print_usage
@@ -52,6 +55,9 @@ while getopts ":l:h" opt; do
         ;;
     l)
         library_paths+=("$OPTARG")
+        ;;
+    i)
+        custom_inputs_path="$OPTARG"
         ;;
     :)
         echo "Error: -$OPTARG requires a value" >&2;
@@ -66,6 +72,20 @@ done
 
 # Shift past the named options to access positional arguments
 shift $((OPTIND - 1))
+
+# Validate that -i requires exactly one circuit file
+if [ -n "$custom_inputs_path" ]; then
+    if [ $# -ne 1 ]; then
+        echo "Error: -i option requires exactly one circuit file argument" >&2
+        echo "Found $# circuit file argument(s)" >&2
+        print_usage
+        exit 1
+    fi
+    if [ ! -f "$custom_inputs_path" ]; then
+        echo "Error: Custom inputs file not found at $custom_inputs_path" >&2
+        exit 1
+    fi
+fi
 
 if [ ${#library_paths} -eq 0 ]; then
     library_paths+=("${script_dir}/test_deps/circomlib/circuits")
@@ -89,11 +109,18 @@ popd > /dev/null
 
 function test_circuit() {
   local circuit_path=$1
+  local custom_inputs=$2
   echo "Running $circuit_path"
   local circuit_name
   circuit_name="$(basename "$circuit_path")" && circuit_name="${circuit_name%%.*}"
   local inputs_path
-  inputs_path="$(dirname "$circuit_path")/${circuit_name}_inputs.json"
+
+  if [ -n "$custom_inputs" ]; then
+    inputs_path="$custom_inputs"
+  else
+    inputs_path="$(dirname "$circuit_path")/${circuit_name}_inputs.json"
+  fi
+
   pwd
   if [ ! -f "$inputs_path" ]; then
     echo -e "${RED}Inputs file not found at $inputs_path${NC}"
@@ -146,7 +173,7 @@ if [ $# -gt 0 ]; then
       echo -e "${RED}Circuit file not found at $circuit_path${NC}"
       exit 1
     fi
-    test_circuit "${circuit_path}"
+    test_circuit "${circuit_path}" "$custom_inputs_path"
   done
 else
 	for circuit_path in "${script_dir}"/test_circuits/*.circom; do
@@ -157,6 +184,6 @@ else
 			continue
 		fi
 
-		test_circuit "${circuit_path}"
+		test_circuit "${circuit_path}" ""
 	done
 fi

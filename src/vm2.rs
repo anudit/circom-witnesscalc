@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::error::Error;
-use ark_ff::Zero;
 
 use crate::field::{Field, FieldOperations, FieldOps};
 
@@ -2155,7 +2154,7 @@ where
             }
             OpCode::OpI64Eqz => {
                 let arg = vm.pop_i64()?;
-                vm.push_i64(if arg.is_zero() { 1 } else { 0 });
+                vm.push_i64(if arg == 0 { 1 } else { 0 });
             }
             OpCode::OpShr => {
                 let lhs = vm.pop_ff()?;

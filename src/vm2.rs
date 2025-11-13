@@ -98,6 +98,7 @@ pub enum OpCode {
     // stack_i64:0 contains the memory address
     FfStore              = 28,
     FfMStore             = 56,
+    FfMStoreFromSignal = 61,
     // Memory load operation (ff.load)
     // stack_i64:0 contains the memory address
     // Result pushed to stack_ff
@@ -126,6 +127,11 @@ pub enum OpCode {
     // stack_i64:-1 contains left operand
     // Result pushed to stack_i64 (1 if lhs <= rhs, 0 otherwise)
     OpI64Lte             = 34,
+    // Integer less-than comparison (i64.lt)
+    // stack_i64:0 contains right operand
+    // stack_i64:-1 contains left operand
+    // Result pushed to stack_i64 (1 if lhs < rhs, 0 otherwise)
+    OpI64Lt = 70,
     // Wrap field element to i64 (i64.wrap_ff)
     // stack_ff:0 contains the field element
     // Result pushed to stack_i64
@@ -165,6 +171,11 @@ pub enum OpCode {
     // stack_i64:-1 contains signal_id
     // Result pushed to stack_i64 (size of the signal)
     GetTemplateSignalSize = 42,
+    // Get signal type in template
+    // stack_i64:0 contains template_id
+    // stack_i64:-1 contains signal_id
+    // Result pushed to stack_i64 (type of the signal)
+    GetTemplateSignalType = 63,
     // Shift left operation for field elements
     // stack_ff:0 contains rhs (shift amount)
     // stack_ff:-1 contains lhs (value to shift)
@@ -262,6 +273,16 @@ pub enum OpCode {
     //   -1: memory address (relative to current FF memory base)
     //   -2: number of signals to copy
     CopySignalFromMemory = 58,
+    CopyCmpInputsFromMemory = 62,
+    GetBusSignalPosition = 64,
+    GetBusSignalSize = 65,
+    OpI64Eq = 66,
+    FfMStoreFromCmpSignal = 67,
+    GetBusSignalType = 68,
+    GetBusSignalDimension = 69,
+    OpI64Gt = 71,
+    OpI64Gte = 72,
+    OpI64Eqz = 73,
 }
 
 pub struct Signals<T: FieldOps> {
@@ -357,8 +378,7 @@ impl <T: FieldOps> Component<T> {
     pub fn get_signal(&self, idx: usize) -> Result<T, Box<dyn Error + Sync + Send>> {
         // println!("GET SIGNAL {}/{}/{}", self.template_id, self.signals_start, idx);
         if let Some(Some(err)) = self.execution_result.get() {
-            return Err(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            return Err(Box::new(std::io::Error::other(
                 format!("Component execution failed: {}", err)
             )));
         }
@@ -1140,6 +1160,12 @@ where
         OpCode::FfMStore => {
             output.push_str("FfMStore");
         }
+        OpCode::FfMStoreFromSignal => {
+            output.push_str("FfMStoreFromSignal");
+        }
+        OpCode::FfMStoreFromCmpSignal => {
+            output.push_str("FfMStoreFromCmpSignal");
+        }
         OpCode::FfMCall => {
             // Read function index
             let func_idx = u32::from_le_bytes((&code[ip..ip+4]).try_into().unwrap());
@@ -1297,11 +1323,26 @@ where
         OpCode::OpI64Mul => {
             output.push_str("OpI64Mul");
         }
+        OpCode::OpI64Lt => {
+            output.push_str("OpI64Lt");
+        }
         OpCode::OpI64Lte => {
             output.push_str("OpI64Lte");
         }
+        OpCode::OpI64Gt => {
+            output.push_str("OpI64Gt");
+        }
+        OpCode::OpI64Gte => {
+            output.push_str("OpI64Gte");
+        }
         OpCode::I64WrapFf => {
             output.push_str("I64WrapFf");
+        }
+        OpCode::OpI64Eq => {
+            output.push_str("OpI64Eq");
+        }
+        OpCode::OpI64Eqz => {
+            output.push_str("OpI64Eqz");
         }
         OpCode::OpShr => {
             output.push_str("OpShr");
@@ -1323,6 +1364,9 @@ where
         }
         OpCode::GetTemplateSignalSize => {
             output.push_str("GetTemplateSignalSize");
+        }
+        OpCode::GetTemplateSignalType => {
+            output.push_str("GetTemplateSignalType");
         }
         OpCode::GetTemplateSignalDimension => {
             output.push_str("GetTemplateSignalDimension");
@@ -1365,6 +1409,21 @@ where
         }
         OpCode::CopySignalFromMemory => {
             output.push_str("CopySignalFromMemory");
+        }
+        OpCode::CopyCmpInputsFromMemory => {
+            output.push_str("CopyCmpInputsFromMemory");
+        }
+        OpCode::GetBusSignalPosition => {
+            output.push_str("GetBusSignalPosition");
+        }
+        OpCode::GetBusSignalSize => {
+            output.push_str("GetBusSignalSize");
+        }
+        OpCode::GetBusSignalType => {
+            output.push_str("GetBusSignalType");
+        }
+        OpCode::GetBusSignalDimension => {
+            output.push_str("GetBusSignalDimension");
         }
     }
 
@@ -1951,6 +2010,73 @@ where
                     );
                 }
             }
+            OpCode::FfMStoreFromSignal => {
+                let size = vm.pop_usize()?;
+                let sig_idx = vm.pop_usize()?;
+                let dst_addr = vm.pop_usize()?;
+
+                let dst_start = vm
+                    .memory_base_pointer_ff
+                    .checked_add(dst_addr)
+                    .ok_or(RuntimeError::MemoryAddressOutOfBounds)?;
+
+                let want_len = dst_start.checked_add(size)
+                    .ok_or(RuntimeError::MemoryAddressOutOfBounds)?;
+                if want_len > vm.memory_ff.len() {
+                    vm.memory_ff.resize(want_len, None);
+                }
+                for offset in 0..size {
+                    let i = sig_idx.checked_add(offset)
+                        .ok_or(RuntimeError::SignalIndexOutOfBounds)?;
+                    let value = component_tree.get_signal(i)?;
+                    vm.memory_ff[dst_start + offset] = Some(value);
+                }
+
+                #[cfg(feature = "debug_vm2")]
+                {
+                    println!(
+                        "FfMStoreFromSignal: copied {} elements from signals[S{}..S{}) to memory[M{}..M{})",
+                        size, sig_idx, sig_idx + size, dst_start, dst_start + size
+                    );
+                }
+            }
+            OpCode::FfMStoreFromCmpSignal => {
+                let size = vm.pop_usize()?;
+                let sig_idx = vm.pop_usize()?;
+                let cmp_idx = vm.pop_usize()?;
+                let dst_addr = vm.pop_usize()?;
+
+                let dst_start = vm
+                    .memory_base_pointer_ff
+                    .checked_add(dst_addr)
+                    .ok_or(RuntimeError::MemoryAddressOutOfBounds)?;
+
+                let want_len = dst_start.checked_add(size).
+                    ok_or(RuntimeError::MemoryAddressOutOfBounds)?;
+                if want_len > vm.memory_ff.len() {
+                    vm.memory_ff.resize(want_len, None);
+                }
+                for offset in 0..size {
+                    let value = component_tree.components[cmp_idx]
+                        .as_ref().unwrap()
+                        .read().unwrap()
+                        .get_signal(sig_idx + offset)?;
+                    vm.memory_ff[dst_start + offset] = Some(value);
+                }
+
+                #[cfg(feature = "debug_vm2")]
+                {
+                    println!(
+                        "FfMStoreFromCmpSignal: copied {} elements from cmp {} signals[S{}..S{}) to memory[M{}..M{})",
+                        size,
+                        cmp_idx,
+                        sig_idx,
+                        sig_idx + size,
+                        dst_start,
+                        dst_start + size
+                    );
+                }
+            }
             OpCode::FfMCall => {
                 // Check call stack depth
                 if vm.call_stack.len() >= 16384 {
@@ -2079,8 +2205,6 @@ where
             OpCode::OpLt => {
                 let lhs = vm.pop_ff()?;
                 let rhs = vm.pop_ff()?;
-                // let rhs = vm.pop_ff()?;
-                // let lhs = vm.pop_ff()?;
                 let result = ff.lt(lhs, rhs);
                 #[cfg(feature = "debug_vm2")]
                 {
@@ -2119,10 +2243,25 @@ where
                 let rhs = vm.pop_i64()?;
                 vm.push_i64(lhs * rhs);
             }
+            OpCode::OpI64Lt => {
+                let lhs = vm.pop_i64()?;
+                let rhs = vm.pop_i64()?;
+                vm.push_i64(if lhs < rhs { 1 } else { 0 });
+            }
             OpCode::OpI64Lte => {
                 let lhs = vm.pop_i64()?;
                 let rhs = vm.pop_i64()?;
                 vm.push_i64(if lhs <= rhs { 1 } else { 0 });
+            }
+            OpCode::OpI64Gt => {
+                let lhs = vm.pop_i64()?;
+                let rhs = vm.pop_i64()?;
+                vm.push_i64(if lhs > rhs { 1 } else { 0 });
+            }
+            OpCode::OpI64Gte => {
+                let lhs = vm.pop_i64()?;
+                let rhs = vm.pop_i64()?;
+                vm.push_i64(if lhs >= rhs { 1 } else { 0 });
             }
             OpCode::I64WrapFf => {
                 let ff_val = vm.pop_ff()?;
@@ -2132,6 +2271,15 @@ where
                 let i64_bytes: [u8; 8] = bytes[0..8].try_into().unwrap();
                 let i64_val = i64::from_le_bytes(i64_bytes);
                 vm.push_i64(i64_val);
+            }
+            OpCode::OpI64Eq => {
+                let rhs = vm.pop_i64()?;
+                let lhs = vm.pop_i64()?;
+                vm.push_i64(if lhs == rhs { 1 } else { 0 });
+            }
+            OpCode::OpI64Eqz => {
+                let arg = vm.pop_i64()?;
+                vm.push_i64(if arg == 0 { 1 } else { 0 });
             }
             OpCode::OpShr => {
                 let lhs = vm.pop_ff()?;
@@ -2253,6 +2401,47 @@ where
                 
                 vm.push_i64(size as i64);
             }
+            OpCode::GetTemplateSignalType => {
+                let template_id = vm.pop_usize()?;
+                let signal_id = vm.pop_usize()?;
+
+                if template_id >= circuit.templates.len() {
+                    return Err(Box::new(RuntimeError::InvalidTemplateId(template_id)));
+                }
+                let template = &circuit.templates[template_id];
+
+                let num_outputs = template.outputs.len();
+                let num_inputs = template.inputs.len();
+                let total_io_signals = num_outputs + num_inputs;
+
+                if signal_id >= total_io_signals {
+                    return Err(Box::new(RuntimeError::SignalIdOutOfBounds(
+                        signal_id,
+                        total_io_signals,
+                    )));
+                }
+
+                let signal = if signal_id < num_outputs {
+                    &template.outputs[signal_id]
+                } else {
+                    &template.inputs[signal_id - num_outputs]
+                };
+
+                let type_id: i64 = match signal {
+                    Signal::Ff(_) => -1,
+                    Signal::Bus(bus_type_id, _) => *bus_type_id as i64,
+                };
+
+                vm.push_i64(type_id);
+
+                #[cfg(feature = "debug_vm2")]
+                {
+                    println!(
+                        "GetTemplateSignalType: template_id {} type_id {} signal_id {}",
+                        template_id, type_id, signal_id
+                    );
+                }
+            }
             OpCode::GetTemplateSignalDimension => {
                 let template_id = vm.pop_usize()?;
                 let signal_id = vm.pop_usize()?;
@@ -2287,6 +2476,132 @@ where
                 }
                 
                 vm.push_i64(dims[dimension_index] as i64);
+            }
+            OpCode::GetBusSignalPosition => {
+                let bus_type_id = vm.pop_usize()?;
+                let field_id = vm.pop_usize()?;
+
+                if bus_type_id >= circuit.types.len() {
+                    return Err(Box::new(RuntimeError::InvalidTemplateId(bus_type_id)));
+                }
+
+                let bus_type = &circuit.types[bus_type_id];
+
+                if field_id >= bus_type.fields.len() {
+                    return Err(Box::new(RuntimeError::SignalIdOutOfBounds(
+                        field_id,
+                        bus_type.fields.len(),
+                    )));
+                }
+
+                let position = bus_type.fields[field_id].offset;
+                vm.push_i64(position as i64);
+
+                #[cfg(feature = "debug_vm2")]
+                {
+                    println!(
+                        "GetBusSignalPosition: bus_type {} field {} => offset {}",
+                        bus_type_id, field_id, position
+                    );
+                }
+            }
+            OpCode::GetBusSignalSize => {
+                let bus_type_id = vm.pop_usize()?;
+                let field_id = vm.pop_usize()?;
+
+                if bus_type_id >= circuit.types.len() {
+                    return Err(Box::new(RuntimeError::InvalidTemplateId(bus_type_id)));
+                }
+
+                let bus_type = &circuit.types[bus_type_id];
+
+                if field_id >= bus_type.fields.len() {
+                    return Err(Box::new(RuntimeError::SignalIdOutOfBounds(
+                        field_id,
+                        bus_type.fields.len(),
+                    )));
+                }
+
+                let size = bus_type.fields[field_id].size;
+                vm.push_i64(size as i64);
+
+                #[cfg(feature = "debug_vm2")]
+                {
+                    println!(
+                        "GetBusSignalSize: bus_type {} field {} => size {}",
+                        bus_type_id, field_id, size
+                    );
+                }
+            }
+            OpCode::GetBusSignalType => {
+                let bus_type_id = vm.pop_usize()?;
+                let field_id = vm.pop_usize()?;
+
+                if bus_type_id >= circuit.types.len() {
+                    return Err(Box::new(RuntimeError::InvalidTemplateId(bus_type_id)));
+                }
+
+                let bus_type = &circuit.types[bus_type_id];
+
+                if field_id >= bus_type.fields.len() {
+                    return Err(Box::new(RuntimeError::SignalIdOutOfBounds(
+                        field_id,
+                        bus_type.fields.len(),
+                    )));
+                }
+
+                let field = &bus_type.fields[field_id];
+                let type_id: i64 = match field.kind {
+                    TypeFieldKind::Ff => -1,
+                    TypeFieldKind::Bus(inner_type_id) => inner_type_id as i64,
+                };
+
+                vm.push_i64(type_id);
+
+                #[cfg(feature = "debug_vm2")]
+                {
+                    println!(
+                        "GetBusSignalType: bus_type {} field {} => type {}",
+                        bus_type_id, field_id, type_id
+                    );
+                }
+            }
+            OpCode::GetBusSignalDimension => {
+                let dimension_idx = vm.pop_usize()?;
+                let field_id = vm.pop_usize()?;
+                let bus_type_id = vm.pop_usize()?;
+
+                if bus_type_id >= circuit.types.len() {
+                    return Err(Box::new(RuntimeError::InvalidTemplateId(bus_type_id)));
+                }
+
+                let bus_type = &circuit.types[bus_type_id];
+
+                if field_id >= bus_type.fields.len() {
+                    return Err(Box::new(RuntimeError::SignalIdOutOfBounds(
+                        field_id,
+                        bus_type.fields.len(),
+                    )));
+                }
+
+                let field = &bus_type.fields[field_id];
+
+                let dims = &field.dims;
+                if dimension_idx >= dims.len() {
+                    return Err(Box::new(RuntimeError::DimensionIndexOutOfBounds(
+                        dimension_idx,
+                        dims.len(),
+                    )));
+                }
+
+                let dim_length = dims[dimension_idx] as i64;
+                vm.push_i64(dim_length);
+
+                #[cfg(feature = "debug_vm2")]
+                println!(
+                    "GetBusSignalDimension: bus_type={} field={} dim[{}]={}",
+                    bus_type_id, field_id, dimension_idx, dim_length
+                );
             }
             OpCode::CopyCmpInputsFromSelf => {
                 let flags = if let Some(flag) = code.get(ip) {
@@ -2369,7 +2684,6 @@ where
                     spawn_component_execution(
                         scope, circuit, ff,
                         component_tree.components[cmp_idx].as_ref().unwrap().clone());
-
                     #[cfg(not(feature = "parallel_components"))]
                     {
                         let c = component_tree.components[cmp_idx].as_ref().unwrap();
@@ -2482,6 +2796,120 @@ where
                     }
                 }
 
+            }
+            OpCode::CopyCmpInputsFromMemory => {
+                let flags = if let Some(flag) = code.get(ip) {
+                    ip += 1;
+                    *flag
+                } else {
+                    return Err(Box::new(RuntimeError::CodeIndexOutOfBounds));
+                };
+
+                let dst_cmp_idx = vm.pop_usize()?;
+                let dst_sig_idx = vm.pop_usize()?;
+                let sig_addr = vm.pop_usize()?;
+                let num_signals = vm.pop_usize()?;
+
+                let memory_start = vm
+                    .memory_base_pointer_ff
+                    .checked_add(sig_addr)
+                    .ok_or(RuntimeError::MemoryAddressOutOfBounds)?;
+
+                for offset in 0..num_signals {
+                    let src_idx = memory_start
+                        .checked_add(offset)
+                        .ok_or(RuntimeError::MemoryAddressOutOfBounds)?;
+                    if src_idx >= vm.memory_ff.len() {
+                        return Err(Box::new(RuntimeError::MemoryAddressOutOfBounds));
+                    }
+
+                    let value = vm
+                        .memory_ff
+                        .get(src_idx)
+                        .and_then(|v| v.as_ref())
+                        .ok_or(RuntimeError::MemoryVariableIsNotSet)?;
+
+                    component_tree.components[dst_cmp_idx]
+                        .as_ref()
+                        .ok_or(RuntimeError::UninitializedComponent)?
+                        .write().unwrap()
+                        .set_signal(dst_sig_idx + offset, *value)?;
+
+                    #[cfg(feature = "debug_vm2")]
+                    {
+                        let dst_idx_global =
+                            component_tree.components[dst_cmp_idx]
+                                .as_ref()
+                                .unwrap()
+                                .read().unwrap()
+                                .signals_start
+                                + dst_sig_idx + offset;
+                        println!(
+                            "CopyCmpInputsFromMemory: M{} -> cmp {} S{} (global S{}), value={}",
+                            src_idx,
+                            dst_cmp_idx,
+                            dst_sig_idx + offset,
+                            dst_idx_global,
+                            *value
+                        );
+                    }
+                }
+
+                let mode = flags & 0b11;
+                let mut should_run = false;
+                match mode {
+                    0b00 => {}
+                    0b01 => {
+                        component_tree.components[dst_cmp_idx]
+                            .as_ref().unwrap()
+                            .write().unwrap()
+                            .number_of_inputs -= num_signals;
+                    }
+                    0b10 => {
+                        should_run = true;
+                    }
+                    0b11 => {
+                        let mut c =
+                            component_tree.components[dst_cmp_idx]
+                            .as_ref().unwrap().write().unwrap();
+                        c.number_of_inputs -= num_signals;
+                        if c.number_of_inputs == 0 {
+                            should_run = true;
+                        }
+                    }
+                    _ => {}
+                }
+
+                #[cfg(feature = "debug_vm2")]
+                {
+                    let c = component_tree.components[dst_cmp_idx]
+                        .as_ref().unwrap()
+                        .read().unwrap();
+                    println!(
+                        "CopyCmpInputsFromMemory: cmp {} inputs left: {}, template: {}",
+                        dst_cmp_idx,
+                        c.number_of_inputs,
+                        circuit.templates[c.template_id].name
+                    );
+                }
+
+                if should_run {
+                    #[cfg(feature = "debug_vm2")]
+                    {
+                        println!("CopyCmpInputsFromMemory: Run component {}", dst_cmp_idx);
+                    }
+                    #[cfg(feature = "parallel_components")]
+                    spawn_component_execution(
+                        scope, circuit, ff,
+                        component_tree.components[dst_cmp_idx].as_ref().unwrap().clone());
+                    #[cfg(not(feature = "parallel_components"))]
+                    {
+                        let c = component_tree.components[dst_cmp_idx].as_ref().unwrap();
+                        let mut component = c.write()
+                            .map_err(|e| format!("Failed to lock component: {}", e))?;
+                        execute(circuit, ff, &mut component)?;
+                    }
+                }
             }
             OpCode::CopySignal => {
                 let dst_idx = vm.pop_usize()?;

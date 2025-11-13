@@ -1,16 +1,16 @@
 use std::collections::HashMap;
+use std::error::Error;
+use std::sync::{Arc, RwLock};
 use crate::field::{FieldOperations, FieldOps};
 use crate::vm2::{Component, InputInfo, Template, Type, TypeFieldKind};
 
 /// Initialize signals array with input values from JSON
 pub fn init_signals<T: FieldOps, F>(
-    inputs_json: impl std::io::Read, signals_num: usize, ff: &F, types: &[Type],
-    input_infos: &[InputInfo]) -> Result<Vec<Option<T>>, Box<dyn std::error::Error>>
+    inputs_json: impl std::io::Read, ff: &F, types: &[Type],
+    input_infos: &[InputInfo],
+    component: &mut Component<T>) -> Result<(), Box<dyn std::error::Error>>
 where
         for <'a> &'a F: FieldOperations<Type = T> {
-
-    let mut signals = vec![None; signals_num];
-    signals[0] = Some(T::one());
 
     // Expand each InputInfo into all its constituent signal paths
     let mut signal_path_to_idx: HashMap<String, usize> = HashMap::new();
@@ -27,7 +27,7 @@ where
         // Try to find exact match first
         if let Some(&signal_idx) = signal_path_to_idx.get(path) {
             signal_path_to_idx.remove(path);
-            signals[signal_idx] = Some(*value);
+            component.set_signal(signal_idx-1, *value).map_err(|e| -> Box<dyn Error> {e})?;
             continue;
         }
 
@@ -35,7 +35,7 @@ where
         if let Some(multidim_path) = try_convert_flat_to_multidim_path(path, input_infos) {
             if let Some(&signal_idx) = signal_path_to_idx.get(&multidim_path) {
                 signal_path_to_idx.remove(&multidim_path);
-                signals[signal_idx] = Some(*value);
+                component.set_signal(signal_idx-1, *value).map_err(|e| -> Box<dyn Error> {e})?;
                 continue;
             }
         }
@@ -45,7 +45,7 @@ where
             let base_path = path.trim_end_matches("[0]");
             if let Some(&signal_idx) = signal_path_to_idx.get(base_path) {
                 signal_path_to_idx.remove(base_path);
-                signals[signal_idx] = Some(*value);
+                component.set_signal(signal_idx-1, *value).map_err(|e| -> Box<dyn Error> {e})?;
                 continue;
             }
         }
@@ -59,21 +59,21 @@ where
         return Err(format!("Missing input signals: {}", missing_signals.join(", ")).into());
     }
 
-    Ok(signals)
+    Ok(())
 }
 
 /// Build the component tree for VM2 execution
-pub fn build_component_tree(
-    main_template_id: usize, vm_templates: &[Template]) -> Component {
+pub fn build_component_tree<T: FieldOps>(
+    main_template_id: usize, vm_templates: &[Template]) -> Component<T> {
 
     create_component(main_template_id, 1, vm_templates).0
 }
 
 /// Create a component tree and returns the component and the number of signals
 /// of self and all its children
-fn create_component(
+fn create_component<T: FieldOps>(
     template_id: usize,
-    signals_start: usize, vm_templates: &[Template]) -> (Component, usize) {
+    signals_start: usize, vm_templates: &[Template]) -> (Component<T>, usize) {
 
     let t = &vm_templates[template_id];
     let mut next_signal_start = signals_start + t.signals_num;
@@ -85,17 +85,17 @@ fn create_component(
                 let (c, signals_num) = create_component(
                     *tmpl_id, next_signal_start, vm_templates);
                 next_signal_start += signals_num;
-                Some(Box::new(c))
+                Some(Arc::new(RwLock::new(c)))
             }
         });
     }
     (
-        Component {
+        Component::new(
             signals_start,
             template_id,
             components,
-            number_of_inputs: t.number_of_inputs,
-        },
+            t.number_of_inputs,
+            t.signals_num),
         next_signal_start - signals_start
     )
 }
@@ -279,7 +279,8 @@ where
         serde_json::Value::Number(n) => {
             let v = if n.is_u64() {
                 let n = n.as_u64().unwrap();
-                ff.parse_le_bytes(n.to_le_bytes().as_slice())?
+                ff.parse_le_bytes(n.to_le_bytes().as_slice())
+                    .map_err(|e| -> Box<dyn Error> {e})?
             } else if n.is_i64() {
                 let n = n.as_i64().unwrap();
                 ff.parse_str(&n.to_string())?
@@ -324,14 +325,14 @@ where
 
 /// Debug helper to print the entire component tree
 #[cfg(feature = "debug_vm2")]
-pub fn debug_component_tree(component: &Component, templates: &[Template]) {
+pub fn debug_component_tree<T: FieldOps>(component: &Component<T>, templates: &[Template]) {
     println!("\n=== Component Tree ===");
     print_component_tree(component, templates, 0);
     println!("===================\n");
 }
 
 #[cfg(feature = "debug_vm2")]
-fn print_component_tree(component: &Component, templates: &[Template], indent: usize) {
+fn print_component_tree<T: FieldOps>(component: &Component<T>, templates: &[Template], indent: usize) {
     let indent_str = "  ".repeat(indent);
     let template_name = &templates[component.template_id].name;
 
@@ -344,7 +345,7 @@ fn print_component_tree(component: &Component, templates: &[Template], indent: u
             match sub_component {
                 Some(sub) => {
                     print!("{}  [{}]: ", indent_str, i);
-                    print_component_tree(sub, templates, indent + 2);
+                    print_component_tree(&sub.read().unwrap(), templates, indent + 2);
                 }
                 None => {
                     println!("{}  [{}]: -", indent_str, i);
@@ -473,7 +474,7 @@ mod tests {
             template7];
 
         // Build component tree with template7 (Root) as the main template
-        let component_tree = build_component_tree(6, &vm_templates);
+        let component_tree: Component<U254> = build_component_tree(6, &vm_templates);
 
         // Verify the structure of the root component
         assert_eq!(component_tree.signals_start, 1);
@@ -482,14 +483,14 @@ mod tests {
         assert_eq!(component_tree.components.len(), 2);
 
         // Verify the first child component (Middle1)
-        let middle1 = component_tree.components[0].as_ref().unwrap();
+        let middle1 = component_tree.components[0].as_ref().unwrap().read().unwrap();
         assert_eq!(middle1.signals_start, 6); // 1 (start) + 5 (signals_num of root)
         assert_eq!(middle1.template_id, 4);
         assert_eq!(middle1.number_of_inputs, 1);
         assert_eq!(middle1.components.len(), 2);
 
         // Verify the second child component (Middle2)
-        let middle2 = component_tree.components[1].as_ref().unwrap();
+        let middle2 = component_tree.components[1].as_ref().unwrap().read().unwrap();
         assert_eq!(middle2.signals_start, 16); // 6 (start of middle1) + 4 (signals_num of middle1) + 3 (signals_num of leaf1) + 3 (signals_num of leaf2)
         assert_eq!(middle2.template_id, 5);
         assert_eq!(middle2.number_of_inputs, 1);
@@ -499,26 +500,26 @@ mod tests {
         assert!(middle2.components[1].is_none());
 
         // Verify the leaf components of Middle1
-        let leaf1 = middle1.components[0].as_ref().unwrap();
+        let leaf1 = middle1.components[0].as_ref().unwrap().read().unwrap();
         assert_eq!(leaf1.signals_start, 10); // 6 (start of middle1) + 4 (signals_num of middle1)
         assert_eq!(leaf1.template_id, 0);
         assert_eq!(leaf1.number_of_inputs, 1);
         assert_eq!(leaf1.components.len(), 0);
 
-        let leaf2 = middle1.components[1].as_ref().unwrap();
+        let leaf2 = middle1.components[1].as_ref().unwrap().read().unwrap();
         assert_eq!(leaf2.signals_start, 13); // 10 (start of leaf1) + 3 (signals_num of leaf1)
         assert_eq!(leaf2.template_id, 1);
         assert_eq!(leaf2.number_of_inputs, 1);
         assert_eq!(leaf2.components.len(), 0);
 
         // Verify the leaf components of Middle2
-        let leaf3 = middle2.components[0].as_ref().unwrap();
+        let leaf3 = middle2.components[0].as_ref().unwrap().read().unwrap();
         assert_eq!(leaf3.signals_start, 20); // 16 (start of middle2) + 4 (signals_num of middle2)
         assert_eq!(leaf3.template_id, 2);
         assert_eq!(leaf3.number_of_inputs, 1);
         assert_eq!(leaf3.components.len(), 0);
 
-        let leaf4 = middle2.components[2].as_ref().unwrap();
+        let leaf4 = middle2.components[2].as_ref().unwrap().read().unwrap();
         assert_eq!(leaf4.signals_start, 23); // 20 (start of leaf3) + 3 (signals_num of leaf3)
         assert_eq!(leaf4.template_id, 3);
         assert_eq!(leaf4.number_of_inputs, 1);
@@ -541,8 +542,14 @@ mod tests {
         let inputs_content = include_str!("../tests/vm2_setup/data/test_init_signals__inputs.json");
 
         let inputs_reader = std::io::Cursor::new(&inputs_content);
-        let result = init_signals(
-            inputs_reader, 44, &ff, &circuit.types, &circuit.input_infos).unwrap();
+
+        let mut component = Component::new(
+            0, 0, vec![], 0,
+            43);
+
+        init_signals(
+            inputs_reader, &ff, &circuit.types, &circuit.input_infos,
+            &mut component).unwrap();
 
         let want: Vec<Option<U254>> = vec![
             Some(U254::from_str("1").unwrap()), // 0
@@ -591,7 +598,12 @@ mod tests {
             None, // 43
         ];
 
-        assert_eq!(result, want);
+        let mut signals: Vec<Option<U254>> = Vec::new();
+        use num_traits::One;
+        signals.push(Some(U254::one()));
+        component.write_all_signals(&mut signals);
+
+        assert_eq!(signals, want);
     }
 
     #[test]
@@ -612,11 +624,19 @@ mod tests {
         assert_eq!(want_prime, prime);
         let ff = Field::new(bn254_prime);
         let circuit = deserialize_witnesscalc_vm2_body(&mut wcd_reader, ff.clone()).unwrap();
+        let mut component = Component::new(
+            0, 0, vec![], 0,
+            18);
 
         // Call init_signals with the new signature
-        let result = init_signals(
-            inputs_reader, 19, &ff, &circuit.types,
-            &circuit.input_infos).unwrap();
+        init_signals(
+            inputs_reader, &ff, &circuit.types,
+            &circuit.input_infos, &mut component).unwrap();
+
+        let mut signals = Vec::new();
+        use num_traits::One;
+        signals.push(Some(U254::one()));
+        component.write_all_signals(&mut signals);
 
         // Expected result
         let want: Vec<Option<U254>> = vec![
@@ -641,7 +661,7 @@ mod tests {
             Some(U254::from_str("12").unwrap()), // 18
         ];
 
-        assert_eq!(result, want);
+        assert_eq!(signals, want);
     }
 
     #[test]

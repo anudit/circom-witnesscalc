@@ -7,10 +7,8 @@ use std::time::Instant;
 use num_bigint::BigUint;
 use num_traits::{Num, ToBytes};
 use circom_witnesscalc::{ast, calculate_witness_vm2, vm2};
-use circom_witnesscalc::ast::{Expr, FfExpr, I64Expr, I64Operand, Statement};
+use circom_witnesscalc::ast::{Expr, FfExpr, I64Expr, I64Operand, Statement, AST};
 use circom_witnesscalc::field::{bn254_prime, Field, FieldOperations, FieldOps};
-#[cfg(feature = "debug_vm2")]
-use circom_witnesscalc::field::U254;
 use circom_witnesscalc::parser::parse;
 use circom_witnesscalc::storage::serialize_witnesscalc_vm2;
 use circom_witnesscalc::vm2::{Circuit, OpCode, InputInfo};
@@ -114,15 +112,14 @@ fn parse_args() -> Args {
 
     Args {
         cvm_file: cvm_file.unwrap_or_else(|| { usage("missing CVM file") }),
-        output_file: output_file,
-        wtns_file: wtns_file,
-        inputs_file: inputs_file,
+        output_file,
+        wtns_file,
+        inputs_file,
     }
 }
 
 fn main() {
     let args = parse_args();
-
     let program_text = fs::read_to_string(&args.cvm_file).unwrap();
     let program = match parse(&program_text) {
         Ok(p) => p,
@@ -132,52 +129,58 @@ fn main() {
         }
     };
 
-    let mut bytecode_buf: Vec<u8> = Vec::new();
-    let mut witness_buf: Vec<u8> = Vec::new();
-
     let bn254 = BigUint::from_str_radix("21888242871839275222246405745257275088548364400416034343698204186575808495617", 10).unwrap();
     if program.prime == bn254 {
         let ff = Field::new(bn254_prime);
-
-        let start = Instant::now();
-        let circuit = compile(&ff, &program).unwrap();
-        println!("Circuit compiled in: {:?}", start.elapsed());
-
-        #[cfg(feature = "debug_vm2")]
-        {
-            for t in &circuit.templates {
-                disassemble::<U254>(&TF::T(t))
-            }
-            for f in &circuit.functions {
-                disassemble::<U254>(&TF::F(f))
-            }
-        }
-
-        if let Some(ref inputs_file) = args.inputs_file {
-            let inputs_reader = File::open(inputs_file).unwrap();
-            let start = Instant::now();
-            calculate_witness_vm2(&circuit, &inputs_reader, &mut witness_buf).unwrap();
-            println!("Witness generated in: {:?}", start.elapsed());
-
-            if let Some(ref wtns_file) = args.wtns_file {
-                let mut f = File::create(wtns_file).unwrap();
-                f.write_all(&witness_buf).unwrap();
-                println!("Witness saved to {}", wtns_file);
-            }
-        }
-
-        if args.output_file.is_some() {
-            serialize_witnesscalc_vm2(&mut bytecode_buf, &circuit).unwrap();
-        }
+        run(&ff, &program, &args).unwrap();
     } else {
         eprintln!("ERROR: Unsupported prime field");
         std::process::exit(1);
+    }
+}
+
+fn run<T: FieldOps>(ff: &Field<T>, program: &AST, args: &Args) -> Result<(), Box<dyn Error>> {
+    let start = Instant::now();
+    let circuit = compile(ff, program)?;
+    let mut bytecode_buf: Vec<u8> = Vec::new();
+
+    println!("Circuit compiled in: {:?}", start.elapsed());
+
+    #[cfg(feature = "debug_vm2")]
+    {
+        for t in &circuit.templates {
+            disassemble::<T>(&TF::T(t))
+        }
+        for f in &circuit.functions {
+            disassemble::<T>(&TF::F(f))
+        }
+    }
+
+    if let Some(ref inputs_file) = args.inputs_file {
+        let inputs_reader = File::open(inputs_file)
+            .map_err(|e| format!("Failed to open inputs file {}: {}", inputs_file, e))?;
+        let start = Instant::now();
+        let mut witness_buf: Vec<u8> = Vec::new();
+        calculate_witness_vm2(&circuit, &inputs_reader, &mut witness_buf).unwrap();
+        println!("Witness generated in: {:?}", start.elapsed());
+
+        if let Some(ref wtns_file) = args.wtns_file {
+            let mut f = File::create(wtns_file).unwrap();
+            f.write_all(&witness_buf).unwrap();
+            println!("Witness saved to {}", wtns_file);
+        }
+    }
+
+    if args.output_file.is_some() {
+        serialize_witnesscalc_vm2(&mut bytecode_buf, &circuit).unwrap();
     }
 
     if let Some(ref output_file) = args.output_file {
         fs::write(output_file, &bytecode_buf).unwrap();
         println!("Bytecode saved to {}", output_file);
     }
+
+    Ok(())
 }
 
 /// Build input info directly from AST Input nodes
@@ -483,10 +486,34 @@ where
             i64_expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpI64Mul as u8);
         }
+        I64Expr::Eq(lhs, rhs) => {
+            operand_i64(ctx, rhs);
+            operand_i64(ctx, lhs);
+            ctx.code.push(OpCode::OpI64Eq as u8);
+        }
+        I64Expr::Eqz(arg) => {
+            operand_i64(ctx, arg);
+            ctx.code.push(OpCode::OpI64Eqz as u8);
+        }
+        I64Expr::Lt(lhs, rhs) => {
+            i64_expression(ctx, ff, rhs)?;
+            i64_expression(ctx, ff, lhs)?;
+            ctx.code.push(OpCode::OpI64Lt as u8);
+        }
         I64Expr::Lte(lhs, rhs) => {
             i64_expression(ctx, ff, rhs)?;
             i64_expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpI64Lte as u8);
+        }
+        I64Expr::Gt(lhs, rhs) => {
+            i64_expression(ctx, ff, rhs)?;
+            i64_expression(ctx, ff, lhs)?;
+            ctx.code.push(OpCode::OpI64Gt as u8);
+        }
+        I64Expr::Gte(lhs, rhs) => {
+            i64_expression(ctx, ff, rhs)?;
+            i64_expression(ctx, ff, lhs)?;
+            ctx.code.push(OpCode::OpI64Gte as u8);
         }
         I64Expr::Load(addr) => {
             operand_i64(ctx, addr);
@@ -510,11 +537,37 @@ where
             operand_i64(ctx, template_id);
             ctx.code.push(OpCode::GetTemplateSignalSize as u8);
         }
+        I64Expr::GetTemplateSignalType(template_id, signal_id) => {
+            operand_i64(ctx, signal_id);
+            operand_i64(ctx, template_id);
+            ctx.code.push(OpCode::GetTemplateSignalType as u8);
+        }
         I64Expr::GetTemplateSignalDimension(template_id, signal_id, dimension_index) => {
             operand_i64(ctx, dimension_index);
             operand_i64(ctx, signal_id);
             operand_i64(ctx, template_id);
             ctx.code.push(OpCode::GetTemplateSignalDimension as u8);
+        }
+        I64Expr::GetBusSignalPosition(template_id, signal_id) => {
+            operand_i64(ctx, signal_id);
+            operand_i64(ctx, template_id);
+            ctx.code.push(OpCode::GetBusSignalPosition as u8);
+        }
+        I64Expr::GetBusSignalSize(template_id, signal_id) => {
+            operand_i64(ctx, signal_id);
+            operand_i64(ctx, template_id);
+            ctx.code.push(OpCode::GetBusSignalSize as u8);
+        }
+        I64Expr::GetBusSignalType(template_id, signal_id) => {
+            operand_i64(ctx, signal_id);
+            operand_i64(ctx, template_id);
+            ctx.code.push(OpCode::GetBusSignalType as u8);
+        }
+        I64Expr::GetBusSignalDimension(template_id, signal_id, dimension_index) => {
+            operand_i64(ctx, signal_id);
+            operand_i64(ctx, template_id);
+            operand_i64(ctx, dimension_index);
+            ctx.code.push(OpCode::GetBusSignalDimension as u8);
         }
     }
     Ok(())
@@ -582,7 +635,8 @@ where
         },
         FfExpr::Literal(v) => {
             ctx.code.push(OpCode::PushFf as u8);
-            let x = ff.parse_le_bytes(v.to_le_bytes().as_slice())?;
+            let x = ff.parse_le_bytes(v.to_le_bytes().as_slice())
+                .map_err(|e| -> Box<dyn Error> {e})?;
             ctx.code.extend_from_slice(x.to_le_bytes().as_slice());
         },
         FfExpr::Load(idx) => {
@@ -681,7 +735,8 @@ where
                     }
                     ast::CallArgument::FfLiteral(value) => {
                         ctx.code.push(1); // arg type 1 = ff literal
-                        let x = ff.parse_le_bytes(value.to_le_bytes().as_slice())?;
+                        let x = ff.parse_le_bytes(value.to_le_bytes().as_slice())
+                            .map_err(|e| -> Box<dyn Error> {e})?;
                         ctx.code.extend_from_slice(x.to_le_bytes().as_slice());
                     }
                     ast::CallArgument::Variable(var_name) => {
@@ -813,6 +868,19 @@ where
             operand_i64(ctx, size);
             ctx.code.push(OpCode::FfMStore as u8);
         },
+        Statement::FfMStoreFromSignal { dst, addr, size } => {
+            operand_i64(ctx, dst);
+            operand_i64(ctx, addr);
+            operand_i64(ctx, size);
+            ctx.code.push(OpCode::FfMStoreFromSignal as u8);
+        }
+        Statement::FfMStoreFromCmpSignal { dst, addr, src, size } => {
+            operand_i64(ctx, dst);
+            operand_i64(ctx, src);
+            operand_i64(ctx, addr);
+            operand_i64(ctx, size);
+            ctx.code.push(OpCode::FfMStoreFromCmpSignal as u8);
+        }
         Statement::CopyCmpInputFromCmp { dst_cmp_idx, dst_sig_idx, src_cmp_idx, src_sig_idx, size, mode } => {
             operand_i64(ctx, size);
             operand_i64(ctx, src_sig_idx);
@@ -830,6 +898,28 @@ where
             ctx.code.push(OpCode::CopyCmpInputsFromCmp as u8);
             ctx.code.push(flags);
         },
+        Statement::CopyCmpInputFromMemory {
+            dst_cmp_idx,
+            dst_sig_idx,
+            sig_idx,
+            size,
+            mode,
+        } => {
+            operand_i64(ctx, size);
+            operand_i64(ctx, sig_idx);
+            operand_i64(ctx, dst_sig_idx);
+            operand_i64(ctx, dst_cmp_idx);
+
+            let flags = match mode {
+                ast::CmpInputMode::None => 0b00u8,
+                ast::CmpInputMode::UpdateCounter => 0b01u8,
+                ast::CmpInputMode::Run => 0b10u8,
+                ast::CmpInputMode::UpdateCounterAndCheck => 0b11u8,
+            };
+
+            ctx.code.push(OpCode::CopyCmpInputsFromMemory as u8);
+            ctx.code.push(flags);
+        }
         Statement::CopySignalFromCmp { dst_idx, cmp_idx, cmp_sig_idx, size } => {
             operand_i64(ctx, size);
             operand_i64(ctx, cmp_sig_idx);
@@ -995,7 +1085,8 @@ where
                     }
                     ast::CallArgument::FfLiteral(value) => {
                         ctx.code.push(1); // arg type 1 = ff literal
-                        let x = ff.parse_le_bytes(value.to_le_bytes().as_slice())?;
+                        let x = ff.parse_le_bytes(value.to_le_bytes().as_slice())
+                            .map_err(|e| -> Box<dyn Error> {e})?;
                         ctx.code.extend_from_slice(x.to_le_bytes().as_slice());
                     }
                     ast::CallArgument::Variable(var_name) => {

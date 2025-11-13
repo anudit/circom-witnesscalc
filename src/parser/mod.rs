@@ -6,7 +6,7 @@ use winnow::combinator::{alt, preceded, repeat, terminated, seq, dispatch, fail,
 use winnow::Parser;
 use winnow::token::{literal, take_till, take_while};
 use winnow::stream::Stream;
-use crate::ast::{CallArgument, ComponentsMode, Expr, FfExpr, I64Expr, I64Operand, Signal, Statement, Template, AST, Function};
+use crate::ast::{CallArgument, ComponentsMode, CmpInputMode, Expr, FfExpr, I64Expr, I64Operand, Signal, Statement, Template, AST, Function, Type, TypeField, TypeFieldKind, Input};
 
 fn parse_prime(input: &mut &str) -> ModalResult<BigUint> {
     let (bi, ): (BigUint, ) = seq!(
@@ -110,13 +110,142 @@ fn parse_witness_list(input: &mut &str) -> ModalResult<Vec<usize>> {
     Ok(s)
 }
 
+fn parse_type_field(input: &mut &str) -> ModalResult<TypeField> {
+    let (name, kind_str, offset, size, dims_count): (&str, &str, usize, usize, usize) = seq!(
+        _: space1,
+        parse_type_name,
+        _: space1,
+        parse_type_name,
+        _: space1,
+        parse_usize,
+        _: space1,
+        parse_usize,
+        _: space1,
+        parse_usize,
+    ).parse_next(input)?;
+    
+    // Parse optional dimensions
+    let mut dims = Vec::new();
+    for _ in 0..dims_count {
+        let _: &str = space1.parse_next(input)?;
+        let dim: usize = parse_usize.parse_next(input)?;
+        dims.push(dim);
+    }
+    
+    let kind = if kind_str == "$ff" {
+        TypeFieldKind::Ff
+    } else if kind_str.starts_with("$$") {
+        // Remove the $$ prefix from bus names
+        TypeFieldKind::Bus(kind_str.strip_prefix("$$").unwrap().to_string())
+    } else {
+        // Bus names must start with $$
+        fail.parse_next(input)?
+    };
+    
+    Ok(TypeField {
+        name: name.strip_prefix('$').unwrap_or(name).to_string(),
+        kind,
+        offset,
+        size,
+        dims,
+    })
+}
+
+fn parse_type(input: &mut &str) -> ModalResult<Type> {
+    let (name, ): (&str, ) = seq!(
+        _: ("%%type", space1),
+        parse_type_name,
+        _: (
+            space0,
+            opt(parse_eol_comment),
+            cut_err(line_ending).context(StrContext::Expected(StrContextValue::CharLiteral('\n')))
+        )
+    ).parse_next(input)?;
+    
+    let mut fields = Vec::new();
+    
+    // Parse fields until we hit another directive or EOF
+    loop {
+        // Check if next line starts with %% or is EOF
+        let checkpoint = input.checkpoint();
+        repeat::<_, _, (), _, _>(0.., parse_empty_line).parse_next(input)?;
+        
+        if input.is_empty() || input.starts_with("%%") {
+            input.reset(&checkpoint);
+            break;
+        }
+        
+        // Parse field
+        let field = parse_type_field(input)?;
+        fields.push(field);
+        
+        // Consume rest of line
+        let _: () = seq!(
+            _: space0,
+            _: opt(parse_eol_comment),
+            _: line_ending,
+        ).parse_next(input)?;
+    }
+    
+    Ok(Type {
+        name: name.strip_prefix('$').unwrap_or(name).to_string(),
+        fields,
+    })
+}
+
+fn parse_inputs(input: &mut &str) -> ModalResult<Vec<Input>> {
+    let (_, _, count) = (
+        literal("%%input"),
+        space1,
+        parse_usize,
+    ).parse_next(input)?;
+    
+    // Handle optional newline or space after count
+    alt((
+        (space0, opt(parse_eol_comment), line_ending).void(),
+        space1.void(),
+    )).parse_next(input)?;
+    
+    let mut inputs = Vec::new();
+    
+    for _ in 0..count {
+        // Skip any leading whitespace/newlines
+        let _ = (space0, opt(line_ending), space0).parse_next(input)?;
+        
+        // Parse quoted name
+        let _ = literal("\"").parse_next(input)?;
+        let name = take_till(0.., |c| c == '"').parse_next(input)?;
+        let _ = literal("\"").parse_next(input)?;
+        let _ = space1.parse_next(input)?;
+        
+        // Parse signal type (ff or bus_N)
+        let signal = alt((
+            parse_ff_signal,
+            parse_bus_signal,
+        )).parse_next(input)?;
+        
+        inputs.push(Input {
+            name: name.to_string(),
+            signal,
+        });
+    }
+    
+    Ok(inputs)
+}
+
 fn parse_i64_literal(input: &mut &str) -> ModalResult<i64> {
     preceded(
         literal("i64."),
-        cut_err(digit1.parse_to()
-            .context(StrContext::Label("i64 literal")))
-            .context(StrContext::Expected(StrContextValue::Description("valid i64 value"))),)
-        .parse_next(input)
+        cut_err(
+            digit1
+                .parse_to()
+                .context(StrContext::Label("i64 literal"))
+                .context(StrContext::Expected(StrContextValue::Description(
+                    "valid i64 value after i64.",
+                ))),
+        ),
+    )
+    .parse_next(input)
 }
 
 fn parse_ff_literal(input: &mut &str) -> ModalResult<BigUint> {
@@ -162,6 +291,16 @@ fn parse_call_argument(input: &mut &str) -> ModalResult<CallArgument> {
                 (parse_i64_operand, preceded(literal(","), parse_i64_operand)),
                 literal(")")
             ).map(|(addr, size)| CallArgument::FfMemory { addr, size }),
+            "signal" => delimited(
+                literal("("),
+                (parse_i64_operand, preceded(literal(","), parse_i64_operand)),
+                literal(")")
+            ).map(|(idx, size)| CallArgument::Signal { idx, size }),
+            "subcmpsignal" => delimited(
+                literal("("),
+                (parse_i64_operand, preceded(literal(","), parse_i64_operand), preceded(literal(","), parse_i64_operand)),
+                literal(")")
+            ).map(|(cmp_idx, sig_idx, size)| CallArgument::CmpSignal { cmp_idx, sig_idx, size }),
             _ => fail::<_, CallArgument, _>,
         },
         // Try to parse literals
@@ -184,6 +323,22 @@ fn parse_variable_name<'s>(input: &mut &'s str) -> ModalResult<&'s str> {
                 })
                 .parse_next(i)?;
             Ok(var_name)
+        }
+    ).parse_next(input)
+}
+
+fn parse_type_name<'s>(input: &mut &'s str) -> ModalResult<&'s str> {
+    trace(
+        "parse_type_name",
+        |i: &mut _| {
+            let type_name = take_while(1..,
+                       |c: char| c.is_alphabetic() || c.is_numeric() || c == '_' || c == '$')
+                .verify(|v: &str| {
+                    let c = v.chars().next().unwrap();
+                    c.is_alphabetic() || c == '_' || c == '$'
+                })
+                .parse_next(i)?;
+            Ok(type_name)
         }
     ).parse_next(input)
 }
@@ -402,12 +557,205 @@ fn parse_statement(input: &mut &str) -> ModalResult<Statement> {
             preceded(space1, parse_ff_expr))
             .map(
                 |(op1, op2, op3)| Statement::SetCmpSignalRun{ cmp_idx: op1, sig_idx: op2, value: op3 }),
+        "set_cmp_input_cnt" => (
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_ff_expr))
+            .map(
+                |(op1, op2, op3)| Statement::SetCmpInputCnt{ cmp_idx: op1, sig_idx: op2, value: op3 }),
+        "set_cmp_input_cnt_check" => (
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_ff_expr))
+            .map(
+                |(op1, op2, op3)| Statement::SetCmpInputCntCheck{ cmp_idx: op1, sig_idx: op2, value: op3 }),
         "set_cmp_input" => (
             preceded(space1, parse_i64_expression),
             preceded(space1, parse_i64_expression),
             preceded(space1, parse_ff_expr))
             .map(
                 |(op1, op2, op3)| Statement::SetCmpInput{ cmp_idx: op1, sig_idx: op2, value: op3 }),
+        "mset_cmp_input" => (
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand))
+            .map(|(cmp_idx, cmp_sig_idx, self_sig_idx, size)| Statement::CopyCmpInputFromSelf {
+                cmp_idx,
+                cmp_sig_idx,
+                self_sig_idx,
+                size,
+                mode: CmpInputMode::None,
+            }),
+        "mset_cmp_input_cnt" => (
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand))
+            .map(|(cmp_idx, cmp_sig_idx, self_sig_idx, size)| Statement::CopyCmpInputFromSelf {
+                cmp_idx,
+                cmp_sig_idx,
+                self_sig_idx,
+                size,
+                mode: CmpInputMode::UpdateCounter,
+            }),
+        "mset_cmp_input_run" => (
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand))
+            .map(|(cmp_idx, cmp_sig_idx, self_sig_idx, size)| Statement::CopyCmpInputFromSelf {
+                cmp_idx,
+                cmp_sig_idx,
+                self_sig_idx,
+                size,
+                mode: CmpInputMode::Run,
+            }),
+        "mset_cmp_input_cnt_check" => (
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand))
+            .map(|(cmp_idx, cmp_sig_idx, self_sig_idx, size)| Statement::CopyCmpInputFromSelf {
+                cmp_idx,
+                cmp_sig_idx,
+                self_sig_idx,
+                size,
+                mode: CmpInputMode::UpdateCounterAndCheck,
+            }),
+        "mset_cmp_input_from_cmp" => (
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand))
+            .map(|(dst_cmp_idx, dst_sig_idx, src_cmp_idx, src_sig_idx, size)| Statement::CopyCmpInputFromCmp {
+                dst_cmp_idx,
+                dst_sig_idx,
+                src_cmp_idx,
+                src_sig_idx,
+                size,
+                mode: CmpInputMode::None,
+            }),
+        "mset_cmp_input_from_cmp_cnt" => (
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand))
+            .map(|(dst_cmp_idx, dst_sig_idx, src_cmp_idx, src_sig_idx, size)| Statement::CopyCmpInputFromCmp {
+                dst_cmp_idx,
+                dst_sig_idx,
+                src_cmp_idx,
+                src_sig_idx,
+                size,
+                mode: CmpInputMode::UpdateCounter,
+            }),
+        "mset_cmp_input_from_cmp_run" => (
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand))
+            .map(|(dst_cmp_idx, dst_sig_idx, src_cmp_idx, src_sig_idx, size)| Statement::CopyCmpInputFromCmp {
+                dst_cmp_idx,
+                dst_sig_idx,
+                src_cmp_idx,
+                src_sig_idx,
+                size,
+                mode: CmpInputMode::Run,
+            }),
+        "mset_cmp_input_from_cmp_cnt_check" => (
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand))
+            .map(|(dst_cmp_idx, dst_sig_idx, src_cmp_idx, src_sig_idx, size)| Statement::CopyCmpInputFromCmp {
+                dst_cmp_idx,
+                dst_sig_idx,
+                src_cmp_idx,
+                src_sig_idx,
+                size,
+                mode: CmpInputMode::UpdateCounterAndCheck,
+            }),
+        "mset_cmp_input_from_memory" => (
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand))
+            .map(|(dst_cmp_idx, dst_sig_idx, sig_idx, size)| Statement::CopyCmpInputFromMemory {
+                dst_cmp_idx,
+                dst_sig_idx,
+                sig_idx,
+                size,
+                mode: CmpInputMode::None,
+            }),
+        "mset_cmp_input_from_memory_cnt" => (
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand))
+            .map(|(dst_cmp_idx, dst_sig_idx, sig_idx, size)| Statement::CopyCmpInputFromMemory {
+                dst_cmp_idx,
+                dst_sig_idx,
+                sig_idx,
+                size,
+                mode: CmpInputMode::UpdateCounter,
+            }),
+        "mset_cmp_input_from_memory_run" => (
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand))
+            .map(|(dst_cmp_idx, dst_sig_idx, sig_idx, size)| Statement::CopyCmpInputFromMemory {
+                dst_cmp_idx,
+                dst_sig_idx,
+                sig_idx,
+                size,
+                mode: CmpInputMode::Run,
+            }),
+        "mset_cmp_input_from_memory_cnt_check" => (
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand))
+            .map(|(dst_cmp_idx, dst_sig_idx, sig_idx, size)| Statement::CopyCmpInputFromMemory {
+                dst_cmp_idx,
+                dst_sig_idx,
+                sig_idx,
+                size,
+                mode: CmpInputMode::UpdateCounterAndCheck,
+            }),
+        "mset_signal" => (
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand))
+            .map(|(dst_idx, src_idx, size)| Statement::CopySignal {
+                dst_idx,
+                src_idx,
+                size,
+            }),
+        "mset_signal_from_cmp" => (
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand))
+            .map(|(dst_idx, cmp_idx, cmp_sig_idx, size)| Statement::CopySignalFromCmp {
+                dst_idx,
+                cmp_idx,
+                cmp_sig_idx,
+                size,
+            }),
+        "mset_signal_from_memory" => (
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand))
+            .map(|(dst_idx, addr, size)| Statement::CopySignalFromMemory {
+                dst_idx,
+                addr,
+                size,
+            }),
         "error" => preceded(space1, parse_i64_operand)
             .map(|op1| Statement::Error{ code: op1 }),
         "loop" => {
@@ -448,6 +796,27 @@ fn parse_statement(input: &mut &str) -> ModalResult<Statement> {
             preceded(space1, parse_i64_operand))
             .map(
                 |(op1, op2, op3)| Statement::FfMReturn{ dst: op1, src: op2, size: op3 }),
+        "ff.mstore" => (
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand))
+            .map(
+                |(dst, src, size)| Statement::FfMStore { dst, src, size }),
+        "ff.mstore_from_signal" => (
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand))
+            .map(
+                |(dst, addr, size)| Statement::FfMStoreFromSignal { dst, addr, size }),
+        "ff.mstore_from_cmp_signal" => (
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),    
+            preceded(space1, parse_i64_operand))
+            .map(
+                |(dst, src, addr, size)| Statement::FfMStoreFromCmpSignal { dst, src, addr, size }),
+        "ff.return" => preceded(space1, parse_ff_expression)
+            .map(|value| Statement::FfReturn { value }),
         "ff.mcall" => {
             |i: &mut &str| {
                 // Parse the function name prefixed with $
@@ -470,7 +839,7 @@ fn parse_statement(input: &mut &str) -> ModalResult<Statement> {
 
     // For set_signal, ff.store, set_cmp_input_run, error, ff.mreturn, and ff.mcall, we need to parse the line end
     match &s {
-        Statement::SetSignal { .. } | Statement::FfStore { .. } | Statement::SetCmpSignalRun { .. } | Statement::Error { .. } | Statement::FfMReturn { .. } | Statement::FfMCall { .. } => {
+        Statement::SetSignal { .. } | Statement::FfStore { .. } | Statement::SetCmpSignalRun { .. } | Statement::SetCmpInputCnt { .. } | Statement::SetCmpInputCntCheck { .. } | Statement::CopyCmpInputFromSelf { .. } | Statement::CopyCmpInputFromCmp { .. } | Statement::CopySignal { .. } | Statement::CopySignalFromCmp { .. } | Statement::CopySignalFromMemory { .. } | Statement::Error { .. } | Statement::FfMReturn { .. } | Statement::FfMStore { .. } | Statement::FfReturn { .. } | Statement::FfMCall { .. } => {
             (space0, opt(parse_eol_comment), parse_line_end).parse_next(input)?;
         }
         _ => {}
@@ -494,6 +863,8 @@ fn parse_ff_expression(input: &mut &str) -> ModalResult<FfExpr> {
                 .map(|(op1, op2)| FfExpr::FfNeq(Box::new(op1), Box::new(op2))),
             "ff.div" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
                 .map(|(op1, op2)| FfExpr::FfDiv(Box::new(op1), Box::new(op2))),
+            "ff.idiv" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
+                .map(|(op1, op2)| FfExpr::Idiv(Box::new(op1), Box::new(op2))),
             "ff.sub" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
                 .map(|(op1, op2)| FfExpr::FfSub(Box::new(op1), Box::new(op2))),
             "ff.eq" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
@@ -503,6 +874,45 @@ fn parse_ff_expression(input: &mut &str) -> ModalResult<FfExpr> {
             "ff.load" => preceded(space1, parse_i64_operand).map(FfExpr::Load),
             "ff.lt" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
                 .map(|(op1, op2)| FfExpr::Lt(Box::new(op1), Box::new(op2))),
+            "ff.le" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
+                .map(|(op1, op2)| FfExpr::Le(Box::new(op1), Box::new(op2))),
+            "ff.gt" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
+                .map(|(op1, op2)| FfExpr::Gt(Box::new(op1), Box::new(op2))),
+            "ff.ge" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
+                .map(|(op1, op2)| FfExpr::Ge(Box::new(op1), Box::new(op2))),
+            "ff.shr" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
+                .map(|(op1, op2)| FfExpr::FfShr(Box::new(op1), Box::new(op2))),
+            "ff.shl" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
+                .map(|(op1, op2)| FfExpr::Shl(Box::new(op1), Box::new(op2))),
+            "ff.band" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
+                .map(|(op1, op2)| FfExpr::FfBand(Box::new(op1), Box::new(op2))),
+            "ff.and" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
+                .map(|(op1, op2)| FfExpr::And(Box::new(op1), Box::new(op2))),
+            "ff.or" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
+                .map(|(op1, op2)| FfExpr::Or(Box::new(op1), Box::new(op2))),
+            "ff.bxor" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
+                .map(|(op1, op2)| FfExpr::Bxor(Box::new(op1), Box::new(op2))),
+            "ff.bor" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
+                .map(|(op1, op2)| FfExpr::Bor(Box::new(op1), Box::new(op2))),
+            "ff.bnot" => (preceded(space1, parse_ff_expr))
+                .map(|op1| FfExpr::Bnot(Box::new(op1))),
+            "ff.pow" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
+                .map(|(op1, op2)| FfExpr::Pow(Box::new(op1), Box::new(op2))),
+            "ff.rem" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
+                .map(|(op1, op2)| FfExpr::Rem(Box::new(op1), Box::new(op2))),
+            "ff.call" => {
+                |i: &mut &str| {
+                    // Parse the function name prefixed with $
+                    let _ = space1.parse_next(i)?;
+                    let _ = literal("$").parse_next(i)?;
+                    let name = parse_variable_name.parse_next(i)?;
+                    
+                    // Parse arguments using the same pattern as ff.mcall
+                    let args = repeat(0.., preceded(space1, parse_call_argument)).parse_next(i)?;
+                    
+                    Ok(FfExpr::Call { name: name.to_string(), args })
+                }
+            },
             _ => fail::<_, FfExpr, _>,
         },
         // Try to parse as a literal
@@ -528,8 +938,64 @@ fn parse_i64_expression(input: &mut &str) -> ModalResult<I64Expr> {
                 .map(|(op1, op2)| I64Expr::Lte(Box::new(op1), Box::new(op2))),
             "i64.load" => preceded(space1, parse_i64_operand)
                 .map(I64Expr::Load),
+            "i64.eq" => (preceded(space1, parse_i64_operand), preceded(space1, parse_i64_operand))
+                .map(|(op1, op2)| I64Expr::Eq(op1, op2)),
+            "i64.eqz" => preceded(space1, parse_i64_operand)
+                .map(I64Expr::Eqz),
+            "i64.lt" => (preceded(space1, parse_i64_expression), preceded(space1, parse_i64_expression))
+                .map(|(op1, op2)| I64Expr::Lt(Box::new(op1), Box::new(op2))),
+            "i64.ge" => (preceded(space1, parse_i64_expression), preceded(space1, parse_i64_expression))
+                .map(|(op1, op2)| I64Expr::Gte(Box::new(op1), Box::new(op2))),
+            "i64.gt" => (preceded(space1, parse_i64_expression), preceded(space1, parse_i64_expression))
+                .map(|(op1, op2)| I64Expr::Gt(Box::new(op1), Box::new(op2))),
             "i64.wrap_ff" => preceded(space1, parse_ff_expr)
                 .map(|expr| I64Expr::Wrap(Box::new(expr))),
+            "get_template_id" => preceded(space1, parse_i64_operand)
+                .map(I64Expr::GetTemplateId),
+            "get_template_signal_type" => (
+                    preceded(space1, parse_i64_operand),
+                    preceded(space1, parse_i64_operand),
+                )
+                .map(|(template_id, signal_id)| I64Expr::GetTemplateSignalType(template_id, signal_id)),
+            "get_template_signal_position" => (
+                    preceded(space1, parse_i64_operand),
+                    preceded(space1, parse_i64_operand),
+                )
+                .map(|(template_id, signal_id)| I64Expr::GetTemplateSignalPosition(template_id, signal_id)),
+            "get_template_signal_size" => (
+                    preceded(space1, parse_i64_operand),
+                    preceded(space1, parse_i64_operand),
+                )
+                .map(|(template_id, signal_id)| I64Expr::GetTemplateSignalSize(template_id, signal_id)),
+            "get_template_signal_dimension" => (
+                    preceded(space1, parse_i64_operand),
+                    preceded(space1, parse_i64_operand),
+                    preceded(space1, parse_i64_operand),
+                )
+                .map(|(template_id, signal_id, dimension_index)| 
+                    I64Expr::GetTemplateSignalDimension(template_id, signal_id, dimension_index)),
+            "get_bus_signal_position" => (
+                    preceded(space1, parse_i64_operand),
+                    preceded(space1, parse_i64_operand),
+                )
+                .map(|(bus_id, signal_id)| I64Expr::GetBusSignalPosition(bus_id, signal_id)),
+            "get_bus_signal_size" => (
+                    preceded(space1, parse_i64_operand),
+                    preceded(space1, parse_i64_operand),
+                )
+                .map(|(bus_id, signal_id)| I64Expr::GetBusSignalSize(bus_id, signal_id)),
+            "get_bus_signal_type" => (
+                    preceded(space1, parse_i64_operand),
+                    preceded(space1, parse_i64_operand),
+                )
+                .map(|(bus_id, signal_id)| I64Expr::GetBusSignalType(bus_id, signal_id)),
+            "get_bus_signal_dimension" => (
+                    preceded(space1, parse_i64_operand),
+                    preceded(space1, parse_i64_operand),
+                    preceded(space1, parse_i64_operand),
+                )
+                .map(|(bus_id, signal_id, dimension_index)| 
+                    I64Expr::GetBusSignalDimension(bus_id, signal_id, dimension_index)),
             _ => fail::<_, I64Expr, _>,
         },
         // Try to parse as a literal
@@ -703,6 +1169,8 @@ fn parse_ast(i: &mut &str) -> ModalResult<AST> {
         components_heap: parse_components_heap
             .context(StrContext::Expected(StrContextValue::StringLiteral("%%components_heap"))),
         _: repeat::<_, _, (), _, _>(0.., parse_empty_line),
+        types: repeat(0.., parse_type),
+        _: repeat::<_, _, (), _, _>(0.., parse_empty_line),
         start: parse_start_template
             .context(StrContext::Expected(StrContextValue::StringLiteral("%%start"))),
         _: repeat::<_, _, (), _, _>(0.., parse_empty_line),
@@ -711,6 +1179,9 @@ fn parse_ast(i: &mut &str) -> ModalResult<AST> {
         _: repeat::<_, _, (), _, _>(0.., parse_empty_line),
         witness: parse_witness_list
             .context(StrContext::Expected(StrContextValue::StringLiteral("%%witness"))),
+        _: repeat::<_, _, (), _, _>(0.., parse_empty_line),
+        inputs: parse_inputs
+            .context(StrContext::Expected(StrContextValue::StringLiteral("%%input"))),
         _: repeat::<_, _, (), _, _>(0.., parse_empty_line),
         functions: repeat(0.., parse_function),
         _: repeat::<_, _, (), _, _>(0.., parse_empty_line),
@@ -951,7 +1422,7 @@ end
 i64.93841982938198593829123 = get_signal
     ^
 invalid i64 literal
-expected valid i64 value";
+expected valid i64 value after i64.";
         let op = parse_i64_operand.parse(input)
             .unwrap_err().to_string();
 
@@ -1000,6 +1471,24 @@ expected valid i64 value";
         // test ff.lt expression
         let input = "ff.lt x_3 ff.2";
         let want = FfExpr::Lt(
+            Box::new(FfExpr::Variable("x_3".to_string())),
+            Box::new(FfExpr::Literal(BigUint::from(2u32)))
+        );
+        let op = parse_ff_expression.parse(input).unwrap();
+        assert_eq!(op, want);
+
+        // test ff.gt expression
+        let input = "ff.gt x_5 ff.10";
+        let want = FfExpr::Gt(
+            Box::new(FfExpr::Variable("x_5".to_string())),
+            Box::new(FfExpr::Literal(BigUint::from(10u32)))
+        );
+        let op = parse_ff_expression.parse(input).unwrap();
+        assert_eq!(op, want);
+
+        // test ff.rem expression
+        let input = "ff.rem x_3 ff.2";
+        let want = FfExpr::Rem(
             Box::new(FfExpr::Variable("x_3".to_string())),
             Box::new(FfExpr::Literal(BigUint::from(2u32)))
         );
@@ -1109,13 +1598,205 @@ x";
     }
 
     #[test]
+    fn test_parse_mset_cmp_input_variants() {
+        let input = "mset_cmp_input i64.1 i64.2 i64.3 i64.4";
+        let want = Statement::CopyCmpInputFromSelf {
+            cmp_idx: i64_op("1"),
+            cmp_sig_idx: i64_op("2"),
+            self_sig_idx: i64_op("3"),
+            size: i64_op("4"),
+            mode: CmpInputMode::None,
+        };
+        let statement = parse_statement.parse(input).unwrap();
+        assert_eq!(statement, want);
+
+        let mut input = "mset_cmp_input_cnt i64.10 i64.11 i64.12 size_var ;; comment
+rest";
+        let want = Statement::CopyCmpInputFromSelf {
+            cmp_idx: i64_op("10"),
+            cmp_sig_idx: i64_op("11"),
+            self_sig_idx: i64_op("12"),
+            size: i64_op("size_var"),
+            mode: CmpInputMode::UpdateCounter,
+        };
+        let statement = parse_statement.parse_next(&mut input).unwrap();
+        assert_eq!(statement, want);
+        assert_eq!(input, "rest");
+
+        let input = "mset_cmp_input_run cmp_idx sig_idx self_idx i64.8";
+        let want = Statement::CopyCmpInputFromSelf {
+            cmp_idx: i64_op("cmp_idx"),
+            cmp_sig_idx: i64_op("sig_idx"),
+            self_sig_idx: i64_op("self_idx"),
+            size: i64_op("8"),
+            mode: CmpInputMode::Run,
+        };
+        let statement = parse_statement.parse(input).unwrap();
+        assert_eq!(statement, want);
+
+        let input = "mset_cmp_input_cnt_check i64.1 cmp_sig self_sig i64.16";
+        let want = Statement::CopyCmpInputFromSelf {
+            cmp_idx: i64_op("1"),
+            cmp_sig_idx: i64_op("cmp_sig"),
+            self_sig_idx: i64_op("self_sig"),
+            size: i64_op("16"),
+            mode: CmpInputMode::UpdateCounterAndCheck,
+        };
+        let statement = parse_statement.parse(input).unwrap();
+        assert_eq!(statement, want);
+    }
+
+    #[test]
+    fn test_parse_mset_cmp_input_from_cmp_variants() {
+        let input = "mset_cmp_input_from_cmp i64.1 i64.2 i64.3 i64.4 i64.5";
+        let want = Statement::CopyCmpInputFromCmp {
+            dst_cmp_idx: i64_op("1"),
+            dst_sig_idx: i64_op("2"),
+            src_cmp_idx: i64_op("3"),
+            src_sig_idx: i64_op("4"),
+            size: i64_op("5"),
+            mode: CmpInputMode::None,
+        };
+        let statement = parse_statement.parse(input).unwrap();
+        assert_eq!(statement, want);
+
+        let mut input = "mset_cmp_input_from_cmp_cnt dst_cmp dst_sig src_cmp src_sig size ;; comment
+rest";
+        let want = Statement::CopyCmpInputFromCmp {
+            dst_cmp_idx: i64_op("dst_cmp"),
+            dst_sig_idx: i64_op("dst_sig"),
+            src_cmp_idx: i64_op("src_cmp"),
+            src_sig_idx: i64_op("src_sig"),
+            size: i64_op("size"),
+            mode: CmpInputMode::UpdateCounter,
+        };
+        let statement = parse_statement.parse_next(&mut input).unwrap();
+        assert_eq!(statement, want);
+        assert_eq!("rest", input);
+
+        let input = "mset_cmp_input_from_cmp_run i64.7 sig_var other_cmp other_sig i64.9";
+        let want = Statement::CopyCmpInputFromCmp {
+            dst_cmp_idx: i64_op("7"),
+            dst_sig_idx: i64_op("sig_var"),
+            src_cmp_idx: i64_op("other_cmp"),
+            src_sig_idx: i64_op("other_sig"),
+            size: i64_op("9"),
+            mode: CmpInputMode::Run,
+        };
+        let statement = parse_statement.parse(input).unwrap();
+        assert_eq!(statement, want);
+
+        let input = "mset_cmp_input_from_cmp_cnt_check dst cmp_sig src cmp_src_sig size_var";
+        let want = Statement::CopyCmpInputFromCmp {
+            dst_cmp_idx: i64_op("dst"),
+            dst_sig_idx: i64_op("cmp_sig"),
+            src_cmp_idx: i64_op("src"),
+            src_sig_idx: i64_op("cmp_src_sig"),
+            size: i64_op("size_var"),
+            mode: CmpInputMode::UpdateCounterAndCheck,
+        };
+        let statement = parse_statement.parse(input).unwrap();
+        assert_eq!(statement, want);
+    }
+
+    #[test]
+    fn test_parse_mset_signal() {
+        let input = "mset_signal i64.6 i64.16 x_82";
+        let want = Statement::CopySignal {
+            dst_idx: i64_op("6"),
+            src_idx: i64_op("16"),
+            size: i64_op("x_82"),
+        };
+        let statement = parse_statement.parse(input).unwrap();
+        assert_eq!(statement, want);
+
+        let mut input = "mset_signal dst src size ;; trailing comment
+rest";
+        let want = Statement::CopySignal {
+            dst_idx: i64_op("dst"),
+            src_idx: i64_op("src"),
+            size: i64_op("size"),
+        };
+        let statement = parse_statement.parse_next(&mut input).unwrap();
+        assert_eq!(statement, want);
+        assert_eq!("rest", input);
+    }
+
+    #[test]
+    fn test_parse_mset_signal_from_cmp() {
+        let input = "mset_signal_from_cmp i64.7 i64.2 i64.3 i64.4";
+        let want = Statement::CopySignalFromCmp {
+            dst_idx: i64_op("7"),
+            cmp_idx: i64_op("2"),
+            cmp_sig_idx: i64_op("3"),
+            size: i64_op("4"),
+        };
+        let statement = parse_statement.parse(input).unwrap();
+        assert_eq!(statement, want);
+
+        let input = "mset_signal_from_cmp dst_var cmp_idx cmp_sig size_var";
+        let want = Statement::CopySignalFromCmp {
+            dst_idx: i64_op("dst_var"),
+            cmp_idx: i64_op("cmp_idx"),
+            cmp_sig_idx: i64_op("cmp_sig"),
+            size: i64_op("size_var"),
+        };
+        let statement = parse_statement.parse(input).unwrap();
+        assert_eq!(statement, want);
+
+        let mut input = "mset_signal_from_cmp d i64.5 s i64.8 ;; comment
+rest";
+        let want = Statement::CopySignalFromCmp {
+            dst_idx: i64_op("d"),
+            cmp_idx: i64_op("5"),
+            cmp_sig_idx: i64_op("s"),
+            size: i64_op("8"),
+        };
+        let statement = parse_statement.parse_next(&mut input).unwrap();
+        assert_eq!(statement, want);
+        assert_eq!(input, "rest");
+    }
+
+    #[test]
+    fn test_parse_mset_signal_from_memory() {
+        let input = "mset_signal_from_memory i64.0 i64.1 i64.2";
+        let want = Statement::CopySignalFromMemory {
+            dst_idx: i64_op("0"),
+            addr: i64_op("1"),
+            size: i64_op("2"),
+        };
+        let statement = parse_statement.parse(input).unwrap();
+        assert_eq!(statement, want);
+
+        let input = "mset_signal_from_memory dst_var addr_var size_var";
+        let want = Statement::CopySignalFromMemory {
+            dst_idx: i64_op("dst_var"),
+            addr: i64_op("addr_var"),
+            size: i64_op("size_var"),
+        };
+        let statement = parse_statement.parse(input).unwrap();
+        assert_eq!(statement, want);
+
+        let mut input = "mset_signal_from_memory dst i64.5 size_var ;; note
+tail";
+        let want = Statement::CopySignalFromMemory {
+            dst_idx: i64_op("dst"),
+            addr: i64_op("5"),
+            size: i64_op("size_var"),
+        };
+        let statement = parse_statement.parse_next(&mut input).unwrap();
+        assert_eq!(statement, want);
+        assert_eq!(input, "tail");
+    }
+
+    #[test]
     fn test_parse_i64_literal_error() {
         let input = "i64.93841982938198593829123 = get_signal";
         let op = parse_i64_literal.parse(input).unwrap_err();
         let want_err = r#"i64.93841982938198593829123 = get_signal
     ^
 invalid i64 literal
-expected valid i64 value"#;
+expected valid i64 value after i64."#;
         assert_eq!(want_err, op.to_string().as_str());
     }
 
@@ -1159,6 +1840,48 @@ expected valid i64 value"#;
         let bus_signal = parse_bus_signal.parse_next(&mut input).unwrap();
         assert_eq!(want, bus_signal);
         assert_eq!(input, "ff 0 ] [ ff 0 ] [3] [ ]");
+    }
+
+    #[test]
+    fn test_parse_inputs() {
+        // Test with inputs on same line
+        let mut input = r#"%%input 3 "a" ff 1 5 "inB" ff 0 "v" bus_2 0"#;
+        let result = parse_inputs.parse_next(&mut input).unwrap();
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].name, "a");
+        assert_eq!(result[0].signal, Signal::Ff(vec![5]));
+        assert_eq!(result[1].name, "inB");
+        assert_eq!(result[1].signal, Signal::Ff(vec![]));
+        assert_eq!(result[2].name, "v");
+        assert_eq!(result[2].signal, Signal::Bus("bus_2".to_string(), vec![]));
+        assert_eq!(input, "");
+        
+        // Test with inputs on multiple lines  
+        let mut input = "%%input 3\n\"a\" ff 1 5\n\"inB\" ff 0\n\"v\" bus_2 0";
+        let result = parse_inputs.parse_next(&mut input).unwrap();
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].name, "a");
+        assert_eq!(result[0].signal, Signal::Ff(vec![5]));
+        assert_eq!(result[1].name, "inB");
+        assert_eq!(result[1].signal, Signal::Ff(vec![]));
+        assert_eq!(result[2].name, "v");
+        assert_eq!(result[2].signal, Signal::Bus("bus_2".to_string(), vec![]));
+        
+        // Test with mixed spacing and newlines
+        let mut input = "%%input 2\n  \"input1\" ff 2 3 4  \n\"input2\" bus_1 1 10";
+        let result = parse_inputs.parse_next(&mut input).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].name, "input1");
+        assert_eq!(result[0].signal, Signal::Ff(vec![3, 4]));
+        assert_eq!(result[1].name, "input2");
+        assert_eq!(result[1].signal, Signal::Bus("bus_1".to_string(), vec![10]));
+        
+        // Test with single input
+        let mut input = "%%input 1 \"single\" ff 0";
+        let result = parse_inputs.parse_next(&mut input).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "single");
+        assert_eq!(result[0].signal, Signal::Ff(vec![]));
     }
 
     #[test]
@@ -1360,7 +2083,7 @@ set_signal i64.0 x_3
 
     #[test]
     fn test_parse_ast() {
-        let input = ";; Prime value
+        let input = r#";; Prime value
 %%prime 21888242871839275222246405745257275088548364400416034343698204186575808495617
 
 ;; Memory of signals
@@ -1378,6 +2101,10 @@ set_signal i64.0 x_3
 ;; Witness (signal list)
 %%witness 0 1 2 3
 
+;; Input signals
+%%input 1
+"a" ff 0
+
 %%template Multiplier_0 [ ff 0  ff 0 ] [ ff 0 ] [3] [ ]
 ;; store bucket. Line 15
 x_0 = get_signal i64.1
@@ -1389,7 +2116,7 @@ x_1 = get_signal i64.2
 x_0 = get_signal i64.1
 ;; end of load bucket
 x_1 = get_signal i64.2
-";
+"#;
         let want = AST {
             prime: BigUint::from_str_radix(
                 "21888242871839275222246405745257275088548364400416034343698204186575808495617",
@@ -1399,6 +2126,8 @@ x_1 = get_signal i64.2
             start: "Multiplier_0".to_string(),
             components_mode: ComponentsMode::Explicit,
             witness: vec![0, 1, 2, 3],
+            inputs: vec![Input{ name: "a".to_string(), signal: Signal::Ff(vec![]) }],
+            types: vec![],
             functions: vec![],
             templates: vec![
                 Template {
@@ -1449,6 +2178,8 @@ x_1 = get_signal i64.2
 ;; Witness (signal list)
 %%witness 0 1 2 3
 
+%%input 0
+
 %%function f1_0 [] [ i64 0 i64 0 ff 0  ff 2 2 2]
 ;; compute bucket
 ;; load bucket
@@ -1488,6 +2219,8 @@ x_1 = get_signal i64.2
             start: "Multiplier_0".to_string(),
             components_mode: ComponentsMode::Explicit,
             witness: vec![0, 1, 2, 3],
+            inputs: vec![],
+            types: vec![],
             functions: vec![
                 Function {
                     name: "f1_0".to_string(),
@@ -1541,6 +2274,149 @@ x_1 = get_signal i64.2
                 panic!();
             }
         }
+    }
+    
+    #[test]
+    fn test_parse_type() {
+        let mut input = "%%type $bus_0
+       $x $ff 0 1 0
+       $y $ff 1 1 0
+%%start";
+        let result = parse_type.parse_next(&mut input);
+        if let Err(e) = &result {
+            println!("Parse error: {}", e);
+        }
+        let parsed_type = result.unwrap();
+        let want = Type {
+            name: "bus_0".to_string(),
+            fields: vec![
+                TypeField {
+                    name: "x".to_string(),
+                    kind: TypeFieldKind::Ff,
+                    offset: 0,
+                    size: 1,
+                    dims: vec![],
+                },
+                TypeField {
+                    name: "y".to_string(),
+                    kind: TypeFieldKind::Ff,
+                    offset: 1,
+                    size: 1,
+                    dims: vec![],
+                },
+            ],
+        };
+        assert_eq!(parsed_type, want);
+    }
+    
+    #[test]
+    fn test_parse_ast_with_types() {
+        let input = ";; Prime value
+%%prime 21888242871839275222246405745257275088548364400416034343698204186575808495617
+;; Memory of signals
+%%signals 4
+;; Heap of components
+%%components_heap 3
+%%type $bus_0
+       $x $ff 0 1 0
+       $y $ff 1 1 0
+%%type $bus_1
+       $start $$bus_0 0 2 0
+       $end $$bus_0 2 2 0
+%%type $bus_2
+       $v $$bus_1 0 4 1  2
+;; Main template
+%%start Multiplier_0
+;; Component creation mode (implicit/explicit)
+%%components explicit
+;; Witness (signal list)
+%%witness 0 1 2 3
+%%input 0
+%%template Multiplier_0 [ ff 0  ff 0 ] [ ff 0 ] [3] [ ]
+;; store bucket. Line 15
+x_0 = get_signal i64.1
+;; end of load bucket
+x_1 = get_signal i64.2
+";
+        let want = AST {
+            prime: BigUint::from_str_radix(
+                "21888242871839275222246405745257275088548364400416034343698204186575808495617",
+                10).unwrap(),
+            signals: 4,
+            components_heap: 3,
+            start: "Multiplier_0".to_string(),
+            components_mode: ComponentsMode::Explicit,
+            witness: vec![0, 1, 2, 3],
+            inputs: vec![],
+            types: vec![
+                Type {
+                    name: "bus_0".to_string(),
+                    fields: vec![
+                        TypeField {
+                            name: "x".to_string(),
+                            kind: TypeFieldKind::Ff,
+                            offset: 0,
+                            size: 1,
+                            dims: vec![],
+                        },
+                        TypeField {
+                            name: "y".to_string(),
+                            kind: TypeFieldKind::Ff,
+                            offset: 1,
+                            size: 1,
+                            dims: vec![],
+                        },
+                    ],
+                },
+                Type {
+                    name: "bus_1".to_string(),
+                    fields: vec![
+                        TypeField {
+                            name: "start".to_string(),
+                            kind: TypeFieldKind::Bus("bus_0".to_string()),
+                            offset: 0,
+                            size: 2,
+                            dims: vec![],
+                        },
+                        TypeField {
+                            name: "end".to_string(),
+                            kind: TypeFieldKind::Bus("bus_0".to_string()),
+                            offset: 2,
+                            size: 2,
+                            dims: vec![],
+                        },
+                    ],
+                },
+                Type {
+                    name: "bus_2".to_string(),
+                    fields: vec![
+                        TypeField {
+                            name: "v".to_string(),
+                            kind: TypeFieldKind::Bus("bus_1".to_string()),
+                            offset: 0,
+                            size: 4,
+                            dims: vec![2],
+                        },
+                    ],
+                },
+            ],
+            functions: vec![],
+            templates: vec![
+                Template {
+                    name: "Multiplier_0".to_string(),
+                    outputs: vec![Signal::Ff(vec![]), Signal::Ff(vec![])],
+                    inputs: vec![Signal::Ff(vec![])],
+                    signals_num: 3,
+                    components: vec![],
+                    body: vec![
+                        assign("x_0", &get_signal("1")),
+                        assign("x_1", &get_signal("2")),
+                    ],
+                },
+            ],
+        };
+        let tmpl_header = consume_parse_result(parse_ast.parse(input));
+        assert_eq!(want, tmpl_header);
     }
 
     #[test]
@@ -1602,6 +2478,45 @@ x";
         );
         let i64_expr = consume_parse_result(parse_i64_expression.parse(input));
         assert_eq!(want, i64_expr);
+
+        // test get_template_id expression
+        let input = "get_template_id i64.0";
+        let want = I64Expr::GetTemplateId(I64Operand::Literal(0));
+        let i64_expr = consume_parse_result(parse_i64_expression.parse(input));
+        assert_eq!(want, i64_expr);
+
+        let input = "get_template_id x_42";
+        let want = I64Expr::GetTemplateId(I64Operand::Variable("x_42".to_string()));
+        let i64_expr = consume_parse_result(parse_i64_expression.parse(input));
+        assert_eq!(want, i64_expr);
+
+        // test get_template_signal_position expression
+        let input = "get_template_signal_position x_3244 i64.1";
+        let want = I64Expr::GetTemplateSignalPosition(
+            I64Operand::Variable("x_3244".to_string()),
+            I64Operand::Literal(1)
+        );
+        let i64_expr = consume_parse_result(parse_i64_expression.parse(input));
+        assert_eq!(want, i64_expr);
+
+        // test get_template_signal_size expression
+        let input = "get_template_signal_size x_3244 i64.1";
+        let want = I64Expr::GetTemplateSignalSize(
+            I64Operand::Variable("x_3244".to_string()),
+            I64Operand::Literal(1)
+        );
+        let i64_expr = consume_parse_result(parse_i64_expression.parse(input));
+        assert_eq!(want, i64_expr);
+        
+        // test get_template_signal_dimension expression
+        let input = "get_template_signal_dimension x_2482 i64.1 i64.2";
+        let want = I64Expr::GetTemplateSignalDimension(
+            I64Operand::Variable("x_2482".to_string()),
+            I64Operand::Literal(1),
+            I64Operand::Literal(2)
+        );
+        let i64_expr = consume_parse_result(parse_i64_expression.parse(input));
+        assert_eq!(want, i64_expr);
     }
 
     #[test]
@@ -1647,6 +2562,41 @@ x";
         let statement = parse_statement.parse_next(&mut input).unwrap();
         assert_eq!(statement, want);
         assert_eq!("x", input);
+    }
+
+    #[test]
+    fn test_parse_ff_mstore() {
+        // Test with literal operands
+        let input = "ff.mstore i64.5 i64.1 i64.3";
+        let want = Statement::FfMStore {
+            dst: I64Operand::Literal(5),
+            src: I64Operand::Literal(1),
+            size: I64Operand::Literal(3),
+        };
+        let statement = parse_statement.parse(input).unwrap();
+        assert_eq!(statement, want);
+
+        // Test with variable operands
+        let input = "ff.mstore x_dst x_src x_size";
+        let want = Statement::FfMStore {
+            dst: I64Operand::Variable("x_dst".to_string()),
+            src: I64Operand::Variable("x_src".to_string()),
+            size: I64Operand::Variable("x_size".to_string()),
+        };
+        let statement = parse_statement.parse(input).unwrap();
+        assert_eq!(statement, want);
+
+        // Test with mixed operands and trailing comment
+        let mut input = "ff.mstore x_dst i64.12 x_sz ;; copy block
+z";
+        let want = Statement::FfMStore {
+            dst: I64Operand::Variable("x_dst".to_string()),
+            src: I64Operand::Literal(12),
+            size: I64Operand::Variable("x_sz".to_string()),
+        };
+        let statement = parse_statement.parse_next(&mut input).unwrap();
+        assert_eq!(statement, want);
+        assert_eq!("z", input);
     }
 
     #[test]
@@ -1873,7 +2823,6 @@ x";
         let statement = parse_statement.parse(input).unwrap();
         assert_eq!(statement, want);
     }
-
 
     fn big_uint(n: &str) -> BigUint {
         BigUint::from_str_radix(n, 10).unwrap()

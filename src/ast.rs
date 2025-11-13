@@ -212,6 +212,42 @@ pub struct Template {
     pub body: Vec<Statement>,
 }
 
+impl Template {
+    pub fn number_of_inputs(&self, types: &[Type]) -> usize {
+        let mut count = 0;
+        for signal in &self.inputs {
+            count += self.calculate_signal_size(signal, types);
+        }
+        count
+    }
+
+    fn calculate_signal_size(&self, signal: &Signal, types: &[Type]) -> usize {
+        match signal {
+            Signal::Ff(dims) => {
+                if dims.is_empty() { 1 } else { dims.iter().product() }
+            }
+            Signal::Bus(bus_type, dims) => {
+                if let Some(type_def) = types.iter().find(|t| t.name == *bus_type) {
+                    let base_size = self.calculate_bus_size(type_def);
+                    if dims.is_empty() { base_size } else { base_size * dims.iter().product::<usize>() }
+                } else {
+                    // If type not found, return 0 (this shouldn't happen in valid code)
+                    0
+                }
+            }
+        }
+    }
+
+    fn calculate_bus_size(&self, bus_type: &Type) -> usize {
+        let mut total_size = 0;
+        for field in &bus_type.fields {
+            // The size field already contains the total size for this field
+            total_size += field.size;
+        }
+        total_size
+    }
+}
+
 #[cfg_attr(test, derive(PartialEq, Debug))]
 pub struct Function {
     pub name: String,
@@ -219,12 +255,23 @@ pub struct Function {
 }
 
 #[cfg_attr(test, derive(PartialEq, Debug))]
+#[derive(Clone)]
 pub enum CallArgument {
     Variable(String),
     I64Literal(i64),
     FfLiteral(BigUint),
     I64Memory { addr: I64Operand, size: I64Operand },
     FfMemory { addr: I64Operand, size: I64Operand },
+    Signal { idx: I64Operand, size: I64Operand },
+    CmpSignal { cmp_idx: I64Operand, sig_idx: I64Operand, size: I64Operand },
+}
+
+#[cfg_attr(test, derive(PartialEq, Debug))]
+pub enum CmpInputMode {
+    None,                  // do nothing with counter
+    UpdateCounter,         // update counter and don't check if needed to run the component
+    Run,                   // run the component after the input set
+    UpdateCounterAndCheck, // update the counter and check if it is time to run the component
 }
 
 #[cfg_attr(test, derive(PartialEq, Debug))]
@@ -235,6 +282,60 @@ pub enum Statement {
     },
     SetSignal { idx: I64Operand, value: FfExpr },
     FfStore { idx: I64Operand, value: FfExpr },
+    FfMStore {
+        dst: I64Operand,
+        src: I64Operand,
+        size: I64Operand,
+    },
+    FfMStoreFromSignal {
+        dst: I64Operand,
+        addr: I64Operand,
+        size: I64Operand,
+    },
+    FfMStoreFromCmpSignal {
+        dst: I64Operand,
+        src: I64Operand,
+        addr: I64Operand,
+        size: I64Operand,
+    },
+    CopySignalFromCmp {
+        dst_idx: I64Operand,
+        cmp_idx: I64Operand,
+        cmp_sig_idx: I64Operand,
+        size: I64Operand,
+    },
+    CopySignal {
+        dst_idx: I64Operand,
+        src_idx: I64Operand,
+        size: I64Operand,
+    },
+    CopySignalFromMemory {
+        dst_idx: I64Operand,
+        addr: I64Operand,
+        size: I64Operand,
+    },
+    CopyCmpInputFromSelf {
+        cmp_idx: I64Operand,
+        cmp_sig_idx: I64Operand,
+        self_sig_idx: I64Operand,
+        size: I64Operand,
+        mode: CmpInputMode,
+    },
+    CopyCmpInputFromCmp {
+        dst_cmp_idx: I64Operand,
+        dst_sig_idx: I64Operand,
+        src_cmp_idx: I64Operand,
+        src_sig_idx: I64Operand,
+        size: I64Operand,
+        mode: CmpInputMode,
+    },
+    CopyCmpInputFromMemory {
+        dst_cmp_idx: I64Operand,
+        dst_sig_idx: I64Operand,
+        sig_idx: I64Operand,
+        size: I64Operand,
+        mode: CmpInputMode,
+    },
     SetCmpSignalRun {
         cmp_idx: I64Operand,
         sig_idx: I64Operand,
@@ -255,10 +356,21 @@ pub enum Statement {
     Break,
     Continue,
     FfMReturn { dst: I64Operand, src: I64Operand, size: I64Operand },
+    FfReturn { value: FfExpr },
     FfMCall {
         name: String,
         args: Vec<CallArgument>,
-    }
+    },
+    SetCmpInputCnt {
+        cmp_idx: I64Operand,
+        sig_idx: I64Operand,
+        value: FfExpr
+    },
+    SetCmpInputCntCheck {
+        cmp_idx: I64Operand,
+        sig_idx: I64Operand,
+        value: FfExpr
+    },
 }
 
 // Clone is always derived (not just in tests) to allow usage across crate boundaries.
@@ -296,13 +408,31 @@ pub enum FfExpr {
     FfMul(Box<FfExpr>, Box<FfExpr>),
     FfNeq(Box<FfExpr>, Box<FfExpr>),
     FfDiv(Box<FfExpr>, Box<FfExpr>),
+    Idiv(Box<FfExpr>, Box<FfExpr>),
     FfSub(Box<FfExpr>, Box<FfExpr>),
     FfEq(Box<FfExpr>, Box<FfExpr>),
     FfEqz(Box<FfExpr>),
+    FfShr(Box<FfExpr>, Box<FfExpr>),
+    Shl(Box<FfExpr>, Box<FfExpr>),
+    FfBand(Box<FfExpr>, Box<FfExpr>),
+    And(Box<FfExpr>, Box<FfExpr>),
+    Or(Box<FfExpr>, Box<FfExpr>),
+    Bxor(Box<FfExpr>, Box<FfExpr>),
+    Bor(Box<FfExpr>, Box<FfExpr>),
+    Bnot(Box<FfExpr>),
+    Pow(Box<FfExpr>, Box<FfExpr>),
     Lt(Box<FfExpr>, Box<FfExpr>),
+    Le(Box<FfExpr>, Box<FfExpr>),
+    Gt(Box<FfExpr>, Box<FfExpr>),
+    Ge(Box<FfExpr>, Box<FfExpr>),
     Variable(String),
     Literal(BigUint),
     Load(I64Operand),
+    Rem(Box<FfExpr>, Box<FfExpr>),
+    Call {
+        name: String,
+        args: Vec<CallArgument>,
+    },
 }
 
 // See I64Operand comment above for why Clone is always derived
@@ -314,15 +444,58 @@ pub enum I64Expr {
     Add(Box<I64Expr>, Box<I64Expr>),
     Sub(Box<I64Expr>, Box<I64Expr>),
     Mul(Box<I64Expr>, Box<I64Expr>),
+    Eq(I64Operand, I64Operand),
+    Eqz(I64Operand),
+    Lt(Box<I64Expr>, Box<I64Expr>),
+    Lte(Box<I64Expr>, Box<I64Expr>),
+    Gt(Box<I64Expr>, Box<I64Expr>),
+    Gte(Box<I64Expr>, Box<I64Expr>),
     Load(I64Operand),
     Wrap(Box<FfExpr>),
-    Lte(Box<I64Expr>, Box<I64Expr>),
+    GetTemplateId(I64Operand),
+    GetTemplateSignalPosition(I64Operand, I64Operand), // template_id, signal_id
+    GetTemplateSignalSize(I64Operand, I64Operand), // template_id, signal_id
+    GetTemplateSignalType(I64Operand, I64Operand), // template_id, input/output signal_id
+    GetTemplateSignalDimension(I64Operand, I64Operand, I64Operand), // template_id, signal_id, dimension_index
+    GetBusSignalPosition(I64Operand, I64Operand), // template_id, signal_id
+    GetBusSignalSize(I64Operand, I64Operand), // template_id, signal_id
+    GetBusSignalType(I64Operand, I64Operand), // template_id, signal_id
+    GetBusSignalDimension(I64Operand, I64Operand, I64Operand), // template_id, signal_id, dimension_index
 }
 
 #[cfg_attr(test, derive(PartialEq, Debug))]
 pub enum Signal {
     Ff(Vec<usize>),          // dimensions
     Bus(String, Vec<usize>), // bus name and dimensions
+}
+
+
+#[cfg_attr(test, derive(PartialEq, Debug))]
+pub struct Input {
+    pub name: String,
+    pub signal: Signal,
+}
+
+
+#[cfg_attr(test, derive(PartialEq, Debug))]
+pub enum TypeFieldKind {
+    Ff,
+    Bus(String),
+}
+
+#[cfg_attr(test, derive(PartialEq, Debug))]
+pub struct TypeField {
+    pub name: String,
+    pub kind: TypeFieldKind,
+    pub offset: usize,
+    pub size: usize,
+    pub dims: Vec<usize>,
+}
+
+#[cfg_attr(test, derive(PartialEq, Debug))]
+pub struct Type {
+    pub name: String,
+    pub fields: Vec<TypeField>,
 }
 
 #[cfg_attr(test, derive(PartialEq, Debug))]
@@ -339,6 +512,97 @@ pub struct AST {
     pub start: String,
     pub components_mode: ComponentsMode,
     pub witness: Vec<usize>,
+    pub inputs: Vec<Input>,
+    pub types: Vec<Type>,
     pub functions: Vec<Function>,
     pub templates: Vec<Template>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_number_of_inputs() {
+        // Create some test types
+        let types = vec![
+            Type {
+                name: "bus_0".to_string(),
+                fields: vec![
+                    TypeField {
+                        name: "x".to_string(),
+                        kind: TypeFieldKind::Ff,
+                        offset: 0,
+                        size: 1,
+                        dims: vec![],
+                    },
+                    TypeField {
+                        name: "y".to_string(),
+                        kind: TypeFieldKind::Ff,
+                        offset: 1,
+                        size: 1,
+                        dims: vec![],
+                    },
+                ],
+            },
+        ];
+
+        // Test 1: Single Ff signal
+        let template = Template {
+            name: "Test1".to_string(),
+            outputs: vec![],
+            inputs: vec![Signal::Ff(vec![])],
+            signals_num: 2,
+            components: vec![],
+            body: vec![],
+        };
+        assert_eq!(template.number_of_inputs(&types), 1);
+
+        // Test 2: Array of Ff signals
+        let template = Template {
+            name: "Test2".to_string(),
+            outputs: vec![],
+            inputs: vec![Signal::Ff(vec![3, 2])],
+            signals_num: 7,
+            components: vec![],
+            body: vec![],
+        };
+        assert_eq!(template.number_of_inputs(&types), 6);
+
+        // Test 3: Bus signal
+        let template = Template {
+            name: "Test3".to_string(),
+            outputs: vec![],
+            inputs: vec![Signal::Bus("bus_0".to_string(), vec![])],
+            signals_num: 3,
+            components: vec![],
+            body: vec![],
+        };
+        assert_eq!(template.number_of_inputs(&types), 2);
+
+        // Test 4: Array of bus signals
+        let template = Template {
+            name: "Test4".to_string(),
+            outputs: vec![],
+            inputs: vec![Signal::Bus("bus_0".to_string(), vec![3])],
+            signals_num: 7,
+            components: vec![],
+            body: vec![],
+        };
+        assert_eq!(template.number_of_inputs(&types), 6);
+
+        // Test 5: Multiple inputs
+        let template = Template {
+            name: "Test5".to_string(),
+            outputs: vec![],
+            inputs: vec![
+                Signal::Ff(vec![2]),
+                Signal::Bus("bus_0".to_string(), vec![2]),
+            ],
+            signals_num: 7,
+            components: vec![],
+            body: vec![],
+        };
+        assert_eq!(template.number_of_inputs(&types), 6); // 2 + 2*2
+    }
 }

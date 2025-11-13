@@ -11,7 +11,7 @@ template Main() {
 
   foo <== x + y + z;
 
-  // some fake constraint so that the above won't be optimied away
+  // some fake constraint so that the above won't be optimized away
   signal nulla;
   nulla <-- 0;
   0 === nulla * (foo - a - b);

@@ -29,7 +29,7 @@ if [ ! -d "$workdir" ]; then
 fi
 
 print_usage() {
-    echo "Usage: $0 [-h] [-l <include_path>] [-i <inputs_path>] [-f <features>] [-m <mode>] [file1 ...]"
+    echo "Usage: $0 [-h] [-l <include_path>] [-i <inputs_path>] [-f <features>] [-m <mode>] [-c <circom_flags>] [file1 ...]"
     echo
     echo "Options:"
     echo "  -l <include_path>      Path to include directory. Can be specified multiple times"
@@ -41,6 +41,9 @@ print_usage() {
     echo "                                 Compiles and executes in one command"
     echo "                         split:  Two-step process - first compile circuit to bytecode (_bc.wcd file),"
     echo "                                 then execute bytecode with inputs to generate witness"
+    echo "  -c <circom_flags>      Additional flags to pass to circom compiler (default: '--cvm_multi_assign')"
+    echo "                         Use empty string to disable default flags: -c \"\""
+    echo "                         Can specify multiple flags: -c \"--cvm_multi_assign --other-flag\""
     echo "  -h                     Print this usage and exit"
     echo
     echo "Positional Arguments:"
@@ -51,6 +54,7 @@ print_usage() {
     echo "  $0 -i custom_inputs.json test_circuits/circuit1.circom"
     echo "  $0 -f debug_vm2 test_circuits/circuit1.circom"
     echo "  $0 -m split test_circuits/circuit1.circom"
+    echo "  $0 -c \"\" test_circuits/circuit1.circom  # Disable cvm_multi_assign"
     echo "  $0 -f parallel_components -m split test_circuits/circuit9_authV2.circom"
 }
 
@@ -58,8 +62,9 @@ declare -a library_paths
 custom_inputs_path=""
 cargo_features=""
 execution_mode="direct"
+circom_cvm_flags="--cvm_multi_assign"
 
-while getopts ":l:i:f:m:h" opt; do
+while getopts ":l:i:f:m:c:h" opt; do
   case $opt in
     h)
         print_usage
@@ -81,6 +86,9 @@ while getopts ":l:i:f:m:h" opt; do
             print_usage
             exit 1
         fi
+        ;;
+    c)
+        circom_cvm_flags="$OPTARG"
         ;;
     :)
         echo "Error: -$OPTARG requires a value" >&2;
@@ -162,7 +170,7 @@ function test_circuit() {
   pushd "$workdir" > /dev/null
 
   # Run Circom to generate assembly file.
-  time circom --r1cs --cvm --wasm --cvm_multi_assign "${include_args[@]}" "$circuit_path"
+  time circom --r1cs --cvm --wasm $circom_cvm_flags "${include_args[@]}" "$circuit_path"
 
   # run commands from the project directory
   pushd "${script_dir}" > /dev/null

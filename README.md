@@ -14,6 +14,20 @@ The idea is to have a universal library that can calculate the witness for any C
 
 The project originally inspired by [circom-witness-rs](https://github.com/philsippl/circom-witness-rs).
 
+## CVM (Circom Virtual Machine) Witness Generator
+
+This project also includes an alternative witness calculation method using the Circom Virtual Machine (CVM). The CVM approach provides a different compilation pipeline for witness generation.
+
+**Note**: The CVM feature is not production ready and is currently in active development. Users are welcome to file bug reports if they encounter circuits where it does not work correctly.
+
+For detailed documentation on using the CVM-based witness calculator, including:
+- Building and using the `cvm-compile` tool
+- Single-step vs two-step compilation modes
+- Testing with the `test_circuits_vm2.sh` script
+- Integration with the circom_cvm fork
+
+See **[cvm.md](cvm.md)** for complete instructions.
+
 ## Unimplemented features
 
 There are some Circom features that are not yet implemented. If you need these features,

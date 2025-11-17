@@ -254,6 +254,51 @@ All output files are created in `test_working_dir_vm2/`:
 
 ---
 
+## Debugging CVM Execution
+
+### debug_vm2 Feature
+
+The `cvm-compile` tool supports a `debug_vm2` cargo feature that enables detailed tracing information during witness calculation. This is useful for understanding problems with CVM execution.
+
+**Building with debug_vm2:**
+
+```bash
+cargo build --release --features debug_vm2
+```
+
+**What it does:**
+
+When enabled, the debug_vm2 feature prints detailed tracing information to stdout during witness calculation, including:
+- Bytecode instructions being executed
+- Component information and state
+- Signal assignments and calculations
+- Stack and memory operations
+- Other low-level execution details
+
+**Example usage:**
+
+```bash
+# Build with debug feature
+cargo build --release --features debug_vm2
+
+# Run with debug output
+./target/release/cvm-compile circuit_cvm/circuit.cvm \
+    --wtns witness.wtns \
+    --inputs inputs.json
+```
+
+The debug output will be printed to stdout alongside the normal execution, providing insight into each step of the witness calculation process.
+
+**Note**: The debug output can be very verbose for large circuits. Consider redirecting output to a file for analysis:
+
+```bash
+./target/release/cvm-compile circuit_cvm/circuit.cvm \
+    --wtns witness.wtns \
+    --inputs inputs.json > debug.log 2>&1
+```
+
+---
+
 ## Integration with Rust Library
 
 The compiled bytecode (.wcd files) can be used programmatically in Rust applications by linking against the `circom-witnesscalc` library. This allows witness generation to be embedded in other tools and services without spawning separate processes.

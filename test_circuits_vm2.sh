@@ -29,11 +29,18 @@ if [ ! -d "$workdir" ]; then
 fi
 
 print_usage() {
-    echo "Usage: $0 [-h] [-l <inlcude_path>] [-i <inputs_path>] [file1 ...]"
+    echo "Usage: $0 [-h] [-l <include_path>] [-i <inputs_path>] [-f <features>] [-m <mode>] [file1 ...]"
     echo
     echo "Options:"
     echo "  -l <include_path>      Path to include directory. Can be specified multiple times"
     echo "  -i <inputs_path>       Path to custom inputs JSON file. Requires exactly one circuit file argument"
+    echo "  -f <features>          Comma-separated list of cargo features to enable during build"
+    echo "                         Example: -f debug_vm2,parallel_components"
+    echo "  -m <mode>              Execution mode: 'direct' or 'split' (default: direct)"
+    echo "                         direct: Single-step witness calculation using cvm-compile with --wtns flag"
+    echo "                                 Compiles and executes in one command"
+    echo "                         split:  Two-step process - first compile circuit to bytecode (_bc.wcd file),"
+    echo "                                 then execute bytecode with inputs to generate witness"
     echo "  -h                     Print this usage and exit"
     echo
     echo "Positional Arguments:"
@@ -42,12 +49,17 @@ print_usage() {
     echo "Examples:"
     echo "  $0 test_circuits/circuit1.circom"
     echo "  $0 -i custom_inputs.json test_circuits/circuit1.circom"
+    echo "  $0 -f debug_vm2 test_circuits/circuit1.circom"
+    echo "  $0 -m split test_circuits/circuit1.circom"
+    echo "  $0 -f parallel_components -m split test_circuits/circuit9_authV2.circom"
 }
 
 declare -a library_paths
 custom_inputs_path=""
+cargo_features=""
+execution_mode="direct"
 
-while getopts ":l:i:h" opt; do
+while getopts ":l:i:f:m:h" opt; do
   case $opt in
     h)
         print_usage
@@ -58,6 +70,17 @@ while getopts ":l:i:h" opt; do
         ;;
     i)
         custom_inputs_path="$OPTARG"
+        ;;
+    f)
+        cargo_features="$OPTARG"
+        ;;
+    m)
+        execution_mode="$OPTARG"
+        if [[ "$execution_mode" != "direct" && "$execution_mode" != "split" ]]; then
+            echo "Error: -m mode must be 'direct' or 'split', got '$execution_mode'" >&2
+            print_usage
+            exit 1
+        fi
         ;;
     :)
         echo "Error: -$OPTARG requires a value" >&2;
@@ -102,16 +125,20 @@ for arg in "${library_paths[@]}"; do
 done
 
 pushd "${script_dir}" > /dev/null
-# to build with debug vm2 execution, run:
-# cargo build --release --features "debug_vm2"
-# cargo build --release --features "parallel_components"
-cargo build --release
+if [ -n "$cargo_features" ]; then
+    echo "Building with features: $cargo_features"
+    cargo build --release --features "$cargo_features"
+else
+    echo "Building without additional features"
+    cargo build --release
+fi
 popd > /dev/null
 
 function test_circuit() {
   local circuit_path=$1
   local custom_inputs=$2
-  echo "Running $circuit_path"
+  local mode=$3
+  echo "Running $circuit_path (mode: $mode)"
   local circuit_name
   circuit_name="$(basename "$circuit_path")" && circuit_name="${circuit_name%%.*}"
   local inputs_path
@@ -140,11 +167,17 @@ function test_circuit() {
   # run commands from the project directory
   pushd "${script_dir}" > /dev/null
 
-  time target/release/cvm-compile \
-    "$cvm_path" -o "${circuit_bytecode_path}"
-
-  time target/release/calc-witness \
-    "${circuit_bytecode_path}" "${inputs_path}" "${witness_path}"
+  if [ "$mode" = "direct" ]; then
+    echo "Running in direct mode (single-step)"
+    time target/release/cvm-compile \
+      "$cvm_path" --wtns "${witness_path}" --inputs "${inputs_path}"
+  else
+    echo "Running in split mode (two-step: compile then execute)"
+    time target/release/cvm-compile \
+      "$cvm_path" -o "${circuit_bytecode_path}"
+    time target/release/calc-witness \
+      "${circuit_bytecode_path}" "${inputs_path}" "${witness_path}"
+  fi
 
   popd > /dev/null
 
@@ -174,7 +207,7 @@ if [ $# -gt 0 ]; then
       echo -e "${RED}Circuit file not found at $circuit_path${NC}"
       exit 1
     fi
-    test_circuit "${circuit_path}" "$custom_inputs_path"
+    test_circuit "${circuit_path}" "$custom_inputs_path" "$execution_mode"
   done
 else
 	for circuit_path in "${script_dir}"/test_circuits/*.circom; do
@@ -185,6 +218,6 @@ else
 			continue
 		fi
 
-		test_circuit "${circuit_path}" ""
+		test_circuit "${circuit_path}" "" "$execution_mode"
 	done
 fi

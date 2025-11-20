@@ -175,7 +175,7 @@ enum Frame<'a, 'b> {
 }
 
 impl Frame<'_, '_> {
-    fn new_component(component: Rc<RefCell<Component>>, templates: &[Template]) -> Frame {
+    fn new_component(component: Rc<RefCell<Component>>, templates: &[Template]) -> Frame<'_, '_> {
         let template_id = component.borrow().template_id;
         Frame::Component {
             ip: 0,
@@ -186,7 +186,7 @@ impl Frame<'_, '_> {
 
     fn new_function(
         fn_idx: usize, functions: &[Function], args_num: usize,
-        return_num: usize) -> Frame {
+        return_num: usize) -> Frame<'_, '_> {
 
         Frame::Function {
             ip: 0,

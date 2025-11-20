@@ -25,6 +25,12 @@
 %%witness 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18
 
 
+;; Input signals
+%%input 2
+"a" ff 2 2 3
+"b" ff 2 3 2
+
+
 %%template Main_0 [ ff 1 6] [ ff 2 2 3 ff 2 3 2] [18] [ ]
 x_0 = i64.2
 ;;line 8

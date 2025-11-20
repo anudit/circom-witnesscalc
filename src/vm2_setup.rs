@@ -377,8 +377,8 @@ mod tests {
             components: vec![],
             inputs: vec![Signal::Ff(vec![1])],
             outputs: vec![Signal::Ff(vec![1])],
-            ff_variable_names: HashMap::new(),
-            i64_variable_names: HashMap::new(),
+            ff_variable_names: vec![],
+            i64_variable_names: vec![],
         };
 
         let template2 = Template {
@@ -391,8 +391,8 @@ mod tests {
             components: vec![],
             inputs: vec![Signal::Ff(vec![1])],
             outputs: vec![Signal::Ff(vec![1])],
-            ff_variable_names: HashMap::new(),
-            i64_variable_names: HashMap::new(),
+            ff_variable_names: vec![],
+            i64_variable_names: vec![],
         };
 
         let template3 = Template {
@@ -405,8 +405,8 @@ mod tests {
             components: vec![],
             inputs: vec![Signal::Ff(vec![1])],
             outputs: vec![Signal::Ff(vec![1])],
-            ff_variable_names: HashMap::new(),
-            i64_variable_names: HashMap::new(),
+            ff_variable_names: vec![],
+            i64_variable_names: vec![],
         };
 
         let template4 = Template {
@@ -419,8 +419,8 @@ mod tests {
             components: vec![],
             inputs: vec![Signal::Ff(vec![1])],
             outputs: vec![Signal::Ff(vec![1])],
-            ff_variable_names: HashMap::new(),
-            i64_variable_names: HashMap::new(),
+            ff_variable_names: vec![],
+            i64_variable_names: vec![],
         };
 
         // Create middle-level templates, each with two children
@@ -435,8 +435,8 @@ mod tests {
             components: vec![Some(0), Some(1)], // References to template1 and template2
             inputs: vec![Signal::Ff(vec![1])],
             outputs: vec![Signal::Ff(vec![1])],
-            ff_variable_names: HashMap::new(),
-            i64_variable_names: HashMap::new(),
+            ff_variable_names: vec![],
+            i64_variable_names: vec![],
         };
 
         // Second middle template has one child and one None
@@ -450,8 +450,8 @@ mod tests {
             components: vec![Some(2), None, Some(3)], // References to template3, None, and template4
             inputs: vec![Signal::Ff(vec![1])],
             outputs: vec![Signal::Ff(vec![1])],
-            ff_variable_names: HashMap::new(),
-            i64_variable_names: HashMap::new(),
+            ff_variable_names: vec![],
+            i64_variable_names: vec![],
         };
 
         // Create root template with two children
@@ -465,8 +465,8 @@ mod tests {
             components: vec![Some(4), Some(5)], // References to template5 and template6
             inputs: vec![Signal::Ff(vec![1])],
             outputs: vec![Signal::Ff(vec![1])],
-            ff_variable_names: HashMap::new(),
-            i64_variable_names: HashMap::new(),
+            ff_variable_names: vec![],
+            i64_variable_names: vec![],
         };
 
         let vm_templates = vec![
@@ -528,8 +528,8 @@ mod tests {
 
     #[test]
     fn test_init_signals() {
-        // to regenerate the test data from cvm & sym files into cwd, run:
-        // cargo run --package circom-witnesscalc --bin cvm-compile ./tests/vm2_setup/data/test_init_signals__cvm.txt ./tests/vm2_setup/data/test_init_signals__sym.txt ./tests/vm2_setup/data/test_init_signals__bc2.wcd
+        // to regenerate the test data from cvm file into wcd, run:
+        // cargo run --package circom-witnesscalc --bin cvm-compile ./tests/vm2_setup/data/test_init_signals__cvm.txt -o ./tests/vm2_setup/data/test_init_signals__bc2.wcd
         let wcd = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/vm2_setup/data/test_init_signals__bc2.wcd");
         let wcd_data = std::fs::read(wcd).unwrap();
@@ -613,8 +613,8 @@ mod tests {
         let inputs_content = std::fs::read(inputs_path).unwrap();
         let inputs_reader = std::io::Cursor::new(&inputs_content);
 
-        // to regenerate the test data from cvm & sym files into wcd, run:
-        // cargo run --package circom-witnesscalc --bin cvm-compile ./tests/vm2_setup/data/test_array_inputs__cvm.txt ./tests/vm2_setup/data/test_array_inputs__sym.txt ./tests/vm2_setup/data/test_array_inputs__bc2.wcd
+        // to regenerate the test data from cvm file into wcd, run:
+        // cargo run --package circom-witnesscalc --bin cvm-compile ./tests/vm2_setup/data/test_array_inputs__cvm.txt -o ./tests/vm2_setup/data/test_array_inputs__bc2.wcd
         let wcd = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/vm2_setup/data/test_array_inputs__bc2.wcd");
         let wcd_data = std::fs::read(wcd).unwrap();
@@ -628,7 +628,6 @@ mod tests {
             0, 0, vec![], 0,
             18);
 
-        // Call init_signals with the new signature
         init_signals(
             inputs_reader, &ff, &circuit.types,
             &circuit.input_infos, &mut component).unwrap();

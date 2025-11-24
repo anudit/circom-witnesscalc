@@ -679,8 +679,6 @@ pub fn serialize_witnesscalc_vm2<T: FieldOps>(
         w.write_all(&template.code)?;
 
         // Write template metadata
-        w.write_u32::<LittleEndian>(template.vars_i64_num as u32)?;
-        w.write_u32::<LittleEndian>(template.vars_ff_num as u32)?;
         w.write_u32::<LittleEndian>(template.signals_num as u32)?;
         w.write_u32::<LittleEndian>(template.number_of_inputs as u32)?;
 
@@ -723,9 +721,6 @@ pub fn serialize_witnesscalc_vm2<T: FieldOps>(
 
         w.write_u32::<LittleEndian>(function.code.len() as u32)?;
         w.write_all(&function.code)?;
-
-        w.write_u32::<LittleEndian>(function.vars_i64_num as u32)?;
-        w.write_u32::<LittleEndian>(function.vars_ff_num as u32)?;
 
         // Write variable name maps
         write_string_vec(&mut w, &function.ff_variable_names)?;
@@ -854,8 +849,6 @@ pub fn deserialize_witnesscalc_vm2_body<T: FieldOps>(
         r.read_exact(&mut code)?;
 
         // Read template metadata
-        let vars_i64_num = r.read_u32::<LittleEndian>()? as usize;
-        let vars_ff_num = r.read_u32::<LittleEndian>()? as usize;
         let signals_num = r.read_u32::<LittleEndian>()? as usize;
         let number_of_inputs = r.read_u32::<LittleEndian>()? as usize;
 
@@ -891,8 +884,6 @@ pub fn deserialize_witnesscalc_vm2_body<T: FieldOps>(
         templates.push(vm2::Template {
             name,
             code,
-            vars_i64_num,
-            vars_ff_num,
             signals_num,
             number_of_inputs,
             components,
@@ -924,10 +915,6 @@ pub fn deserialize_witnesscalc_vm2_body<T: FieldOps>(
         let mut code = vec![0u8; code_len];
         r.read_exact(&mut code)?;
 
-        // Read function metadata
-        let vars_i64_num = r.read_u32::<LittleEndian>()? as usize;
-        let vars_ff_num = r.read_u32::<LittleEndian>()? as usize;
-
         // Read variable name maps
         let ff_variable_names = read_string_vec(&mut r)?;
         let i64_variable_names = read_string_vec(&mut r)?;
@@ -935,8 +922,6 @@ pub fn deserialize_witnesscalc_vm2_body<T: FieldOps>(
         functions.push(vm2::Function {
             name,
             code,
-            vars_i64_num,
-            vars_ff_num,
             ff_variable_names,
             i64_variable_names,
         });
@@ -1340,8 +1325,6 @@ mod tests {
                 vm2::Template {
                     name: "main".to_string(),
                     code: vec![1, 2, 3, 4, 5],
-                    vars_i64_num: 2,
-                    vars_ff_num: 3,
                     signals_num: 5,
                     number_of_inputs: 2,
                     components: vec![Some(1), None, Some(2)],
@@ -1353,8 +1336,6 @@ mod tests {
                 vm2::Template {
                     name: "sub_template".to_string(),
                     code: vec![10, 20, 30],
-                    vars_i64_num: 1,
-                    vars_ff_num: 1,
                     signals_num: 3,
                     number_of_inputs: 1,
                     components: vec![],
@@ -1368,16 +1349,12 @@ mod tests {
                 vm2::Function {
                     name: "add".to_string(),
                     code: vec![100, 101, 102],
-                    vars_i64_num: 0,
-                    vars_ff_num: 2,
                     ff_variable_names: vec![],
                     i64_variable_names: vec![],
                 },
                 vm2::Function {
                     name: "mul".to_string(),
                     code: vec![200, 201],
-                    vars_i64_num: 1,
-                    vars_ff_num: 0,
                     ff_variable_names: vec![],
                     i64_variable_names: vec![],
                 },
@@ -1452,19 +1429,19 @@ mod tests {
         for (t1, t2) in circuit.templates.iter().zip(circuit2.templates.iter()) {
             assert_eq!(t1.name, t2.name);
             assert_eq!(t1.code, t2.code);
-            assert_eq!(t1.vars_i64_num, t2.vars_i64_num);
-            assert_eq!(t1.vars_ff_num, t2.vars_ff_num);
+            assert_eq!(t1.ff_variable_names, t2.ff_variable_names);
+            assert_eq!(t1.i64_variable_names, t2.i64_variable_names);
             assert_eq!(t1.signals_num, t2.signals_num);
             assert_eq!(t1.number_of_inputs, t2.number_of_inputs);
             assert_eq!(t1.components, t2.components);
         }
-        
+
         // Verify functions
         for (f1, f2) in circuit.functions.iter().zip(circuit2.functions.iter()) {
             assert_eq!(f1.name, f2.name);
             assert_eq!(f1.code, f2.code);
-            assert_eq!(f1.vars_i64_num, f2.vars_i64_num);
-            assert_eq!(f1.vars_ff_num, f2.vars_ff_num);
+            assert_eq!(f1.ff_variable_names, f2.ff_variable_names);
+            assert_eq!(f1.i64_variable_names, f2.i64_variable_names);
         }
         
         // Verify input_infos
@@ -1557,8 +1534,6 @@ mod tests {
                 vm2::Template {
                     name: "模板名称".to_string(), // Chinese characters
                     code: vec![1, 2, 3],
-                    vars_i64_num: 1,
-                    vars_ff_num: 1,
                     signals_num: 1,
                     number_of_inputs: 1,
                     components: vec![],
@@ -1572,8 +1547,6 @@ mod tests {
                 vm2::Function {
                     name: "función_española".to_string(), // Spanish characters
                     code: vec![4, 5, 6],
-                    vars_i64_num: 0,
-                    vars_ff_num: 1,
                     ff_variable_names: vec![],
                     i64_variable_names: vec![],
                 },
@@ -1659,8 +1632,6 @@ mod tests {
                 vm2::Template {
                     name: "TestTemplate".to_string(),
                     code: vec![1, 2, 3],
-                    vars_i64_num: 2,
-                    vars_ff_num: 3,
                     signals_num: 5,
                     number_of_inputs: 1,
                     components: vec![],
@@ -1720,8 +1691,6 @@ mod tests {
                 vm2::Function {
                     name: "TestFunction".to_string(),
                     code: vec![10, 20, 30],
-                    vars_i64_num: 1,
-                    vars_ff_num: 3,
                     ff_variable_names: ff_variable_names.clone(),
                     i64_variable_names: i64_variable_names.clone(),
                 },

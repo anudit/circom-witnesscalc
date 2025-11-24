@@ -461,8 +461,6 @@ impl Signal {
 pub struct Template {
     pub name: String,
     pub code: Vec<u8>,
-    pub vars_i64_num: usize,
-    pub vars_ff_num: usize,
     pub signals_num: usize,
     pub number_of_inputs: usize,
     pub components: Vec<Option<usize>>,
@@ -476,8 +474,6 @@ pub struct Template {
 pub struct Function {
     pub name: String,
     pub code: Vec<u8>,
-    pub vars_i64_num: usize,
-    pub vars_ff_num: usize,
     // Variable name mappings for debugging
     pub ff_variable_names: Vec<String>,
     pub i64_variable_names: Vec<String>,
@@ -1013,8 +1009,8 @@ fn usize_from_code(
 
 pub fn disassemble_instruction_to_string<T>(
     code: &[u8], ip: usize, name: &str,
-    ff_variable_names: &Vec<String>,
-    i64_variable_names: &Vec<String>) -> (usize, String)
+    ff_variable_names: &[String],
+    i64_variable_names: &[String]) -> (usize, String)
 where
     T: FieldOps {
 
@@ -1432,8 +1428,8 @@ where
 
 pub fn disassemble_instruction<T>(
     code: &[u8], ip: usize, name: &str,
-    ff_variable_names: &Vec<String>,
-    i64_variable_names: &Vec<String>) -> usize
+    ff_variable_names: &[String],
+    i64_variable_names: &[String]) -> usize
 where
     T: FieldOps {
     let (new_ip, output) = disassemble_instruction_to_string::<T>(
@@ -1551,9 +1547,9 @@ where
     // Initialize with template's variable counts (function calls will resize as needed)
     // TODO every time we switch the context, we should check the stacks have sufficient size
     vm.stack_ff.resize_with(
-        circuit.templates[component_tree.template_id].vars_ff_num, || None);
+        circuit.templates[component_tree.template_id].ff_variable_names.len(), || None);
     vm.stack_i64.resize_with(
-        circuit.templates[component_tree.template_id].vars_i64_num, || None);
+        circuit.templates[component_tree.template_id].i64_variable_names.len(), || None);
 
     #[cfg(feature = "debug_vm2")]
     let (mut code, mut name, mut ff_variable_names, mut i64_variable_names) = get_current_context(&vm, circuit, component_tree);
@@ -2114,8 +2110,8 @@ where
                 vm.memory_base_pointer_i64 = vm.memory_i64.len();
                 
                 // Allocate space for function's local variables
-                vm.stack_ff.resize(vm.stack_base_pointer_ff + circuit.functions[func_idx].vars_ff_num, None);
-                vm.stack_i64.resize(vm.stack_base_pointer_i64 + circuit.functions[func_idx].vars_i64_num, None);
+                vm.stack_ff.resize(vm.stack_base_pointer_ff + circuit.functions[func_idx].ff_variable_names.len(), None);
+                vm.stack_i64.resize(vm.stack_base_pointer_i64 + circuit.functions[func_idx].i64_variable_names.len(), None);
                 
                 // Process arguments and copy to function memory
                 process_function_arguments(

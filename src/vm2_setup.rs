@@ -370,8 +370,6 @@ mod tests {
         let template1 = Template {
             name: "Leaf1".to_string(),
             code: vec![],
-            vars_i64_num: 0,
-            vars_ff_num: 0,
             signals_num: 3,
             number_of_inputs: 1,
             components: vec![],
@@ -384,8 +382,6 @@ mod tests {
         let template2 = Template {
             name: "Leaf2".to_string(),
             code: vec![],
-            vars_i64_num: 0,
-            vars_ff_num: 0,
             signals_num: 3,
             number_of_inputs: 1,
             components: vec![],
@@ -398,8 +394,6 @@ mod tests {
         let template3 = Template {
             name: "Leaf3".to_string(),
             code: vec![],
-            vars_i64_num: 0,
-            vars_ff_num: 0,
             signals_num: 3,
             number_of_inputs: 1,
             components: vec![],
@@ -412,8 +406,6 @@ mod tests {
         let template4 = Template {
             name: "Leaf4".to_string(),
             code: vec![],
-            vars_i64_num: 0,
-            vars_ff_num: 0,
             signals_num: 3,
             number_of_inputs: 1,
             components: vec![],
@@ -428,8 +420,6 @@ mod tests {
         let template5 = Template {
             name: "Middle1".to_string(),
             code: vec![],
-            vars_i64_num: 0,
-            vars_ff_num: 0,
             signals_num: 4,
             number_of_inputs: 1,
             components: vec![Some(0), Some(1)], // References to template1 and template2
@@ -443,8 +433,6 @@ mod tests {
         let template6 = Template {
             name: "Middle2".to_string(),
             code: vec![],
-            vars_i64_num: 0,
-            vars_ff_num: 0,
             signals_num: 4,
             number_of_inputs: 1,
             components: vec![Some(2), None, Some(3)], // References to template3, None, and template4
@@ -458,8 +446,6 @@ mod tests {
         let template7 = Template {
             name: "Root".to_string(),
             code: vec![],
-            vars_i64_num: 0,
-            vars_ff_num: 0,
             signals_num: 5,
             number_of_inputs: 1,
             components: vec![Some(4), Some(5)], // References to template5 and template6

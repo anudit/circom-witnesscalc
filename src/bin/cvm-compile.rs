@@ -1277,8 +1277,6 @@ where
     Ok(vm2::Function {
         name: f.name.clone(),
         code: ctx.code,
-        vars_i64_num: ctx.i64_variable_indexes.len(),
-        vars_ff_num: ctx.ff_variable_indexes.len(),
         ff_variable_names,
         i64_variable_names,
     })
@@ -1332,8 +1330,6 @@ where
     Ok(vm2::Template {
         name: t.name.clone(),
         code: ctx.code,
-        vars_i64_num: ctx.i64_variable_indexes.len(),
-        vars_ff_num: ctx.ff_variable_indexes.len(),
         signals_num: t.signals_num,
         number_of_inputs: t.number_of_inputs(types),
         components: t.components.clone(),

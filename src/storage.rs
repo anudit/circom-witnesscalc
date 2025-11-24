@@ -142,6 +142,7 @@ impl From<crate::proto::UnoOp> for UnoOperation {
             crate::proto::UnoOp::Id => UnoOperation::Id,
             crate::proto::UnoOp::Lnot => UnoOperation::Lnot,
             crate::proto::UnoOp::Bnot => UnoOperation::Bnot,
+            crate::proto::UnoOp::Sqrt => UnoOperation::Sqrt,
         }
     }
 }

@@ -11,9 +11,10 @@ use compiler::circuit_design::function::FunctionCode;
 use compiler::circuit_design::template::TemplateCode;
 use compiler::compiler_interface::{run_compiler, Circuit, Config};
 use compiler::intermediate_representation::InstructionList;
-use compiler::intermediate_representation::ir_interface::{AddressType, ComputeBucket, CreateCmpBucket, InputInformation, Instruction, InstructionPointer, LoadBucket, LocationRule, ObtainMeta, OperatorType, ReturnType, StatusInput, ValueType};
+use compiler::intermediate_representation::ir_interface::{AccessType, AddressType, ComputeBucket, CreateCmpBucket, InputInformation, Instruction, InstructionPointer, LoadBucket, LocationRule, ObtainMeta, OperatorType, ReturnType, SizeOption, StatusInput, ValueType};
 use constraint_generation::{build_circuit, BuildConfig};
 use program_structure::error_definition::Report;
+use program_structure::constants::UsefulConstants;
 use ruint::aliases::U256;
 use type_analysis::check_types::check_types;
 use circom_witnesscalc::{deserialize_inputs, wtns_from_u256_witness};
@@ -40,6 +41,20 @@ enum U32OrExpression {
     U32(u32),
     BigInt(U256),
     Expression,
+}
+
+fn expect_single_size(size: &SizeOption) -> usize {
+    match size {
+        SizeOption::Single(value) => *value,
+        SizeOption::Multiple(values) => {
+            panic!("size depends on template at runtime: {:?}", values);
+        }
+    }
+}
+
+fn expect_single_size_u32(size: &SizeOption) -> u32 {
+    let v = expect_single_size(size);
+    v.try_into().expect("size does not fit into u32")
 }
 
 fn u32_or_expression(
@@ -269,9 +284,12 @@ fn main() {
     }
 
     let version = "2.1.9";
+    let prime_name = String::from("bn128");
+    let field_constant = UsefulConstants::new(&prime_name).get_p().clone();
 
     let parser_result = parser::run_parser(
-        args.circuit_file.clone(), version, args.link_libraries.clone());
+        args.circuit_file.clone(), version, args.link_libraries.clone(),
+        &field_constant, false);
 
     let mut program_archive = match parser_result {
         Err((file_library, report_collection)) => {
@@ -326,6 +344,8 @@ fn main() {
             debug_output: false,
             produce_input_log: true,
             wat_flag: false,
+            sanity_check_style: 2,
+            no_asm_flag: false,
         },
         version)
         .unwrap();
@@ -379,13 +399,18 @@ fn main() {
             .collect()))
         .collect();
 
+    let producer_inputs = circuit.c_producer.get_main_input_list();
+    let main_inputs: Vec<(String, usize, usize)> = producer_inputs.iter()
+        .map(|input| (input.name.clone(), input.start, input.size))
+        .collect();
+
     let cs: CompiledCircuit = CompiledCircuit {
         main_template_id,
         templates: compiled_templates,
         functions: compiled_functions,
         signals_num: sigs_num,
         constants,
-        inputs: circuit.c_producer.get_main_input_list().clone(),
+        inputs: main_inputs.clone(),
         witness_signals: witness_list,
         io_map,
     };
@@ -410,8 +435,7 @@ fn main() {
             .expect("Failed to read input file");
         let inputs = deserialize_inputs(&inputs_data)
             .unwrap();
-        let input_list = circuit.c_producer.get_main_input_list();
-        init_input_signals(input_list, &inputs, &mut signals2);
+        init_input_signals(&main_inputs, &inputs, &mut signals2);
 
         execute(
             main_component, &cs.templates, &cs.functions, &cs.constants,
@@ -525,14 +549,24 @@ fn store_subsignal(
             false
         }
         LocationRule::Mapped { signal_code: signal_code_local, indexes } => {
-            for idx_inst in indexes {
-                expression_u32(
-                    idx_inst, &mut ctx.code, ctx.constants,
-                    &mut ctx.line_numbers, &ctx.components)
+            for access in indexes {
+                match access {
+                    AccessType::Indexed(index_info) => {
+                        for idx_inst in &index_info.indexes {
+                            expression_u32(
+                                idx_inst, &mut ctx.code, ctx.constants,
+                                &mut ctx.line_numbers, &ctx.components);
+                            indexes_number = indexes_number
+                                .checked_add(1)
+                                .expect("Too many indexes");
+                        }
+                    }
+                    AccessType::Qualified(_) => {
+                        panic!("bus accesses are not supported in VM compiler");
+                    }
+                }
             }
 
-            indexes_number = indexes.len()
-                .try_into().expect("Too many indexes");
             signal_code = (*signal_code_local).try_into()
                 .expect("Too large signal code");
 
@@ -572,7 +606,7 @@ fn store_subsignal(
     ctx.code.extend_from_slice(signals_num.to_le_bytes().as_ref());
     for _ in 0..4 { ctx.line_numbers.push(usize::MAX); }
 
-    let input_status: InputStatus = if let InputInformation::Input{ status } = input_information {
+    let input_status: InputStatus = if let InputInformation::Input{ status, .. } = input_information {
         into_input_status(status)
     } else {
         panic!("Can't store signal to non-input subcomponent");
@@ -634,8 +668,8 @@ fn statement(
                         }
                     }
 
-                    let signals_num: u32 = store_bucket.context.size
-                        .try_into().expect("Too many signals");
+                    let signals_num = expect_single_size_u32(
+                        &store_bucket.context.size);
                     ctx.code.extend_from_slice(signals_num.to_le_bytes().as_ref());
                     for _ in 0..4 { ctx.line_numbers.push(usize::MAX); }
                 }
@@ -669,15 +703,15 @@ fn statement(
                         }
                     }
 
-                    let signals_num: u32 = store_bucket.context.size
-                        .try_into().expect("Too many signals");
+                    let signals_num = expect_single_size_u32(
+                        &store_bucket.context.size);
                     ctx.code.extend_from_slice(signals_num.to_le_bytes().as_ref());
                     for _ in 0..4 { ctx.line_numbers.push(usize::MAX); }
                 }
 
                 AddressType::SubcmpSignal { ref cmp_address, ref input_information, .. } => {
-                    let signals_num: u32 = store_bucket.context.size
-                        .try_into().expect("Too many signals");
+                    let signals_num = expect_single_size_u32(
+                        &store_bucket.context.size);
 
                     store_subsignal(
                         ctx, &store_bucket.dest, store_bucket.get_line(),
@@ -806,8 +840,8 @@ fn statement(
             match call_bucket.return_info {
                 ReturnType::Intermediate { .. } => todo!(),
                 ReturnType::Final(ref final_data) => {
-                    let return_num: u32 = final_data.context.size.try_into()
-                        .expect("Too many return values");
+                    let return_num = expect_single_size_u32(
+                        &final_data.context.size);
                     ctx.code.extend_from_slice(return_num.to_le_bytes().as_ref());
                     for _ in 0..4 { ctx.line_numbers.push(usize::MAX); }
 
@@ -897,7 +931,7 @@ fn fn_statement(
         Instruction::Store(ref store_bucket) => {
 
             let ln = fn_expression(&store_bucket.src, code, constants, line_numbers);
-            assert_eq!(ln, store_bucket.context.size);
+            assert_eq!(ln, expect_single_size(&store_bucket.context.size));
             assert!(matches!(store_bucket.dest_address_type, AddressType::Variable));
 
             let location = if let LocationRule::Indexed{ref location, ..} = store_bucket.dest {
@@ -926,8 +960,8 @@ fn fn_statement(
                 }
             }
 
-            let values_num: u32 = store_bucket.context.size
-                .try_into().expect("Too many values");
+            let values_num = expect_single_size_u32(
+                &store_bucket.context.size);
             code.extend_from_slice(values_num.to_le_bytes().as_ref());
             for _ in 0..4 { line_numbers.push(usize::MAX); }
 
@@ -980,8 +1014,8 @@ fn fn_statement(
             match call_bucket.return_info {
                 ReturnType::Intermediate { .. } => todo!(),
                 ReturnType::Final(ref final_data) => {
-                    let return_num: u32 = final_data.context.size.try_into()
-                        .expect("Too many return values");
+                    let return_num = expect_single_size_u32(
+                        &final_data.context.size);
                     code.extend_from_slice(return_num.to_le_bytes().as_ref());
                     for _ in 0..4 { line_numbers.push(usize::MAX); }
 
@@ -1140,8 +1174,7 @@ fn expression_load(
                 }
             }
 
-            let signals_num: u32 = lb.context.size
-                .try_into().expect("Too many signals");
+            let signals_num = expect_single_size_u32(&lb.context.size);
             code.extend_from_slice(signals_num.to_le_bytes().as_ref());
             for _ in 0..4 { line_numbers.push(usize::MAX); }
         }
@@ -1175,12 +1208,23 @@ fn expression_load(
                     false
                 }
                 LocationRule::Mapped { signal_code: ref signal_code_local, ref indexes } => {
-                    for idx_inst in indexes {
-                        expression_u32(idx_inst, code, constants, line_numbers, components)
+                    for access in indexes {
+                        match access {
+                            AccessType::Indexed(index_info) => {
+                                for idx_inst in &index_info.indexes {
+                                    expression_u32(
+                                        idx_inst, code, constants, line_numbers, components);
+                                    indexes_number = indexes_number
+                                        .checked_add(1)
+                                        .expect("Too many indexes");
+                                }
+                            }
+                            AccessType::Qualified(_) => {
+                                panic!("bus accesses are not supported in VM compiler");
+                            }
+                        }
                     }
 
-                    indexes_number = indexes.len()
-                        .try_into().expect("Too many indexes");
                     signal_code = (*signal_code_local).try_into()
                         .expect("Too large signal code");
 
@@ -1220,8 +1264,7 @@ fn expression_load(
             line_numbers.push(lb.line);
 
             // Put signals number argument
-            let signals_num: u32 = lb.context.size.try_into()
-                .expect("Too many signals");
+            let signals_num = expect_single_size_u32(&lb.context.size);
             code.extend_from_slice(signals_num.to_le_bytes().as_ref());
             for _ in 0..4 { line_numbers.push(usize::MAX); }
 
@@ -1272,14 +1315,13 @@ fn expression_load(
                 }
             }
 
-            let signals_num: u32 = lb.context.size
-                .try_into().expect("Too many signals");
+            let signals_num = expect_single_size_u32(&lb.context.size);
             code.extend_from_slice(signals_num.to_le_bytes().as_ref());
             for _ in 0..4 { line_numbers.push(usize::MAX); }
         }
     }
 
-    lb.context.size
+    expect_single_size(&lb.context.size)
 }
 
 fn fn_expression_load(
@@ -1313,12 +1355,11 @@ fn fn_expression_load(
         }
     }
 
-    let values_num: u32 = lb.context.size
-        .try_into().expect("Too many signals");
+    let values_num = expect_single_size_u32(&lb.context.size);
     code.extend_from_slice(values_num.to_le_bytes().as_ref());
     for _ in 0..4 { line_numbers.push(usize::MAX); }
 
-    lb.context.size
+    expect_single_size(&lb.context.size)
 }
 
 fn expression_compute(
@@ -1344,7 +1385,7 @@ fn expression_compute(
             line_numbers.push(cb.line);
         };
 
-    match cb.op {
+    match &cb.op {
         OperatorType::Mul => {
             op2(OpCode::OpMul);
         }
@@ -1384,8 +1425,8 @@ fn expression_compute(
         OperatorType::Greater => {
             op2(OpCode::OpGt);
         }
-        OperatorType::Eq( x ) => {
-            if x != 1 {
+        OperatorType::Eq(x) => {
+            if expect_single_size(x) != 1 {
                 todo!();
             }
             op2(OpCode::OpEq);
@@ -1439,7 +1480,7 @@ fn fn_expression_compute(
         line_numbers.push(cb.line);
     };
 
-    match cb.op {
+    match &cb.op {
         OperatorType::Mul => {
             op2(OpCode::OpMul);
         }
@@ -1479,8 +1520,8 @@ fn fn_expression_compute(
         OperatorType::Greater => {
             op2(OpCode::OpGt);
         }
-        OperatorType::Eq( x ) => {
-            if x != 1 {
+        OperatorType::Eq(x) => {
+            if expect_single_size(x) != 1 {
                 todo!();
             }
             op2(OpCode::OpEq);
@@ -2046,9 +2087,11 @@ mod tests {
         let inst = Box::new(Instruction::Store(StoreBucket {
             line: 8,
             message_id: 0,
-            context: InstrContext { size: 1 },
+            context: InstrContext { size: SizeOption::Single(1) },
+            src_context: InstrContext { size: SizeOption::Single(1) },
             dest_is_output: false,
             dest_address_type: AddressType::Variable,
+            src_address_type: None,
             dest: LocationRule::Indexed {
                 location: Box::new(Instruction::Value(ValueBucket {
                     line: 8,
@@ -2133,9 +2176,11 @@ mod tests {
         let inst = Box::new(Instruction::Store(StoreBucket {
             line: 12,
             message_id: 0,
-            context: InstrContext { size: 1 },
+            context: InstrContext { size: SizeOption::Single(1) },
+            src_context: InstrContext { size: SizeOption::Single(1) },
             dest_is_output: false,
             dest_address_type: AddressType::Variable,
+            src_address_type: None,
             dest: LocationRule::Indexed {
                 location: Box::new(Instruction::Value(ValueBucket {
                     line: 8,
@@ -2166,7 +2211,7 @@ mod tests {
                             })),
                             template_header: None,
                         },
-                        context: InstrContext { size: 1 },
+                        context: InstrContext { size: SizeOption::Single(1) },
                     })),
                     Box::new(Instruction::Load(LoadBucket{
                         line: 12,
@@ -2212,7 +2257,7 @@ mod tests {
                                                             })),
                                                             template_header: None,
                                                         },
-                                                        context: InstrContext { size: 1 },
+                                                        context: InstrContext { size: SizeOption::Single(1) },
                                                     })),
                                                 ],
                                             })),
@@ -2229,7 +2274,7 @@ mod tests {
                             })),
                             template_header: None,
                         },
-                        context: InstrContext { size: 1 },
+                        context: InstrContext { size: SizeOption::Single(1) },
                     })),
                 ],
             })),
@@ -2299,9 +2344,11 @@ STORE(
         let inst = Box::new(Instruction::Store(StoreBucket {
             line: 207,
             message_id: 0,
-            context: InstrContext { size: 1 },
+            context: InstrContext { size: SizeOption::Single(1) },
+            src_context: InstrContext { size: SizeOption::Single(1) },
             dest_is_output: false,
             dest_address_type: AddressType::Signal,
+            src_address_type: None,
             dest: LocationRule::Indexed {
                 location: Box::new(Instruction::Value(ValueBucket {
                     line: 0,
@@ -2326,6 +2373,8 @@ STORE(
                     uniform_parallel_value: None,
                     is_output: false,
                     input_information: InputInformation::NoInput,
+                    is_anonymous: false,
+                    cmp_name: String::new(),
                 },
                 src: LocationRule::Indexed {
                     location: Box::new(Instruction::Value(ValueBucket {
@@ -2336,7 +2385,7 @@ STORE(
                         value: 0,
                     })),
                     template_header: None },
-                context: InstrContext { size: 1 },
+                context: InstrContext { size: SizeOption::Single(1) },
             })),
         }));
 

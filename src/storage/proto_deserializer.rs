@@ -272,9 +272,10 @@ fn decode_uno_op_node<T: FieldOps + 'static, NS: NodesStorage + 'static>(
                     1 => UnoOperation::Id,
                     2 => UnoOperation::Lnot,
                     3 => UnoOperation::Bnot,
+                    4 => UnoOperation::Sqrt,
                     _ => return Err(Error::new(
                         ErrorKind::InvalidData,
-                        format!("Unknown DuoOp operation value: {}", value),
+                        format!("Unknown UnoOp operation value: {}", value),
                     )),
                 };
             },

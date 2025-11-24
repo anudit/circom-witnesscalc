@@ -30,6 +30,7 @@ enum UnoOp {
     Id = 1;
     Lnot = 2;
     Bnot = 3;
+    Sqrt = 4;
 }
 
 enum TresOp {

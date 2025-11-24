@@ -275,13 +275,13 @@ impl TF<'_> {
             TF::F(f) => &f.name,
         }
     }
-    fn ff_variable_names(&self) -> &HashMap<usize, String> {
+    fn ff_variable_names(&self) -> &Vec<String> {
         match self {
             TF::T(t) => &t.ff_variable_names,
             TF::F(f) => &f.ff_variable_names,
         }
     }
-    fn i64_variable_names(&self) -> &HashMap<usize, String> {
+    fn i64_variable_names(&self) -> &Vec<String> {
         match self {
             TF::T(t) => &t.i64_variable_names,
             TF::F(f) => &f.i64_variable_names,
@@ -1252,21 +1252,31 @@ where
     }
 
     // Build reverse mappings for variable names (index -> name)
-    let mut ff_variable_names = HashMap::new();
+    let mut ff_variable_names = vec![String::new(); ctx.ff_variable_indexes.len()];
     for (name, &index) in &ctx.ff_variable_indexes {
-        ff_variable_names.insert(index as usize, name.clone());
+        let idx: usize = index.try_into()
+            .map_err(|_| format!("Invalid ff variable index: {}", index))?;
+        if idx >= ff_variable_names.len() {
+            return Err(format!("FF variable index {} out of bounds (max {})",
+                              idx, ff_variable_names.len() - 1).into());
+        }
+        ff_variable_names[idx] = name.clone();
     }
 
-    let mut i64_variable_names = HashMap::new();
+    let mut i64_variable_names = vec![String::new(); ctx.i64_variable_indexes.len()];
     for (name, &index) in &ctx.i64_variable_indexes {
-        i64_variable_names.insert(index as usize, name.clone());
+        let idx: usize = index.try_into()
+            .map_err(|_| format!("Invalid i64 variable index: {}", index))?;
+        if idx >= i64_variable_names.len() {
+            return Err(format!("I64 variable index {} out of bounds (max {})",
+                              idx, i64_variable_names.len() - 1).into());
+        }
+        i64_variable_names[idx] = name.clone();
     }
 
     Ok(vm2::Function {
         name: f.name.clone(),
         code: ctx.code,
-        vars_i64_num: ctx.i64_variable_indexes.len(),
-        vars_ff_num: ctx.ff_variable_indexes.len(),
         ff_variable_names,
         i64_variable_names,
     })
@@ -1288,14 +1298,26 @@ where
     }
 
     // Build reverse mappings for variable names (index -> name)
-    let mut ff_variable_names = HashMap::new();
+    let mut ff_variable_names = vec![String::new(); ctx.ff_variable_indexes.len()];
     for (name, &index) in &ctx.ff_variable_indexes {
-        ff_variable_names.insert(index as usize, name.clone());
+        let idx: usize = index.try_into()
+            .map_err(|_| format!("Invalid ff variable index: {}", index))?;
+        if idx >= ff_variable_names.len() {
+            return Err(format!("FF variable index {} out of bounds (max {})",
+                              idx, ff_variable_names.len() - 1).into());
+        }
+        ff_variable_names[idx] = name.clone();
     }
 
-    let mut i64_variable_names = HashMap::new();
+    let mut i64_variable_names = vec![String::new(); ctx.i64_variable_indexes.len()];
     for (name, &index) in &ctx.i64_variable_indexes {
-        i64_variable_names.insert(index as usize, name.clone());
+        let idx: usize = index.try_into()
+            .map_err(|_| format!("Invalid i64 variable index: {}", index))?;
+        if idx >= i64_variable_names.len() {
+            return Err(format!("I64 variable index {} out of bounds (max {})",
+                              idx, i64_variable_names.len() - 1).into());
+        }
+        i64_variable_names[idx] = name.clone();
     }
 
     let inputs = t.inputs.iter()
@@ -1308,8 +1330,6 @@ where
     Ok(vm2::Template {
         name: t.name.clone(),
         code: ctx.code,
-        vars_i64_num: ctx.i64_variable_indexes.len(),
-        vars_ff_num: ctx.ff_variable_indexes.len(),
         signals_num: t.signals_num,
         number_of_inputs: t.number_of_inputs(types),
         components: t.components.clone(),
@@ -1408,8 +1428,8 @@ mod tests {
             "00000067 [test      ] NoOp\n",
         );
 
-        let ff_variable_names = HashMap::new();
-        let i64_variable_names = HashMap::new();
+        let ff_variable_names = vec![];
+        let i64_variable_names = vec![];
         let actual_output = capture_disassembly(
             "test", &ctx.code, &ff_variable_names, &i64_variable_names);
 
@@ -1417,8 +1437,8 @@ mod tests {
     }
 
     fn capture_disassembly(
-        name: &str, code: &[u8], ff_variable_names: &HashMap<usize, String>,
-        i64_variable_names: &HashMap<usize, String>) -> String {
+        name: &str, code: &[u8], ff_variable_names: &Vec<String>,
+        i64_variable_names: &Vec<String>) -> String {
 
         let mut actual_output = String::new();
         let mut ip: usize = 0;

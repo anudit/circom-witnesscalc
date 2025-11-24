@@ -61,6 +61,65 @@ fn read_signal<R: Read>(r: &mut R) -> std::io::Result<vm2::Signal> {
     }
 }
 
+fn write_string_vec<W: Write>(w: &mut W, vec: &Vec<String>) -> std::io::Result<()> {
+    let count = vec.len();
+
+    // Calculate total_bytes: 4 (count) + sum of (4 + value.len()) for each entry
+    let total_bytes: u32 = 4 + vec.iter()
+        .map(|v| 4 + v.len() as u32)
+        .sum::<u32>();
+
+    // Write: total_bytes, count, then each (value_len, value_bytes)
+    w.write_u32::<LittleEndian>(total_bytes)?;
+    w.write_u32::<LittleEndian>(count as u32)?;
+
+    for value in vec {
+        w.write_u32::<LittleEndian>(value.len() as u32)?;
+        if !value.is_empty() {
+            w.write_all(value.as_bytes())?;
+        }
+    }
+
+    Ok(())
+}
+
+fn read_string_vec<R: Read>(r: &mut R) -> std::io::Result<Vec<String>> {
+    let total_bytes = r.read_u32::<LittleEndian>()?;
+    let count = r.read_u32::<LittleEndian>()? as usize;
+
+    let mut vec = Vec::with_capacity(count);
+    let mut bytes_read = 4u32; // count field
+
+    for _ in 0..count {
+        let value_len = r.read_u32::<LittleEndian>()? as usize;
+        bytes_read += 4;
+
+        if value_len > 0 {
+            let mut value_bytes = vec![0u8; value_len];
+            r.read_exact(&mut value_bytes)?;
+            bytes_read += value_len as u32;
+
+            let value = String::from_utf8(value_bytes)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData,
+                    format!("Invalid UTF-8 in variable name: {}", e)))?;
+            vec.push(value);
+        } else {
+            vec.push(String::new());
+        }
+    }
+
+    // Validate that we read exactly total_bytes
+    if bytes_read != total_bytes {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("Variable names data corruption: expected {} bytes, read {} bytes",
+                    total_bytes, bytes_read)
+        ));
+    }
+
+    Ok(vec)
+}
+
 // format of the wtns.graph file:
 // + magic line: wtns.graph.001
 // + 4 bytes unsigned LE 32-bit integer: number of nodes
@@ -620,8 +679,6 @@ pub fn serialize_witnesscalc_vm2<T: FieldOps>(
         w.write_all(&template.code)?;
 
         // Write template metadata
-        w.write_u32::<LittleEndian>(template.vars_i64_num as u32)?;
-        w.write_u32::<LittleEndian>(template.vars_ff_num as u32)?;
         w.write_u32::<LittleEndian>(template.signals_num as u32)?;
         w.write_u32::<LittleEndian>(template.number_of_inputs as u32)?;
 
@@ -648,6 +705,10 @@ pub fn serialize_witnesscalc_vm2<T: FieldOps>(
         for signal in &template.outputs {
             write_signal(&mut w, signal)?;
         }
+
+        // Write variable name maps
+        write_string_vec(&mut w, &template.ff_variable_names)?;
+        write_string_vec(&mut w, &template.i64_variable_names)?;
     }
 
     // Write number of functions
@@ -661,8 +722,9 @@ pub fn serialize_witnesscalc_vm2<T: FieldOps>(
         w.write_u32::<LittleEndian>(function.code.len() as u32)?;
         w.write_all(&function.code)?;
 
-        w.write_u32::<LittleEndian>(function.vars_i64_num as u32)?;
-        w.write_u32::<LittleEndian>(function.vars_ff_num as u32)?;
+        // Write variable name maps
+        write_string_vec(&mut w, &function.ff_variable_names)?;
+        write_string_vec(&mut w, &function.i64_variable_names)?;
     }
 
     // Write witness
@@ -787,8 +849,6 @@ pub fn deserialize_witnesscalc_vm2_body<T: FieldOps>(
         r.read_exact(&mut code)?;
 
         // Read template metadata
-        let vars_i64_num = r.read_u32::<LittleEndian>()? as usize;
-        let vars_ff_num = r.read_u32::<LittleEndian>()? as usize;
         let signals_num = r.read_u32::<LittleEndian>()? as usize;
         let number_of_inputs = r.read_u32::<LittleEndian>()? as usize;
 
@@ -817,18 +877,20 @@ pub fn deserialize_witnesscalc_vm2_body<T: FieldOps>(
             outputs.push(read_signal(&mut r)?);
         }
 
+        // Read variable name maps
+        let ff_variable_names = read_string_vec(&mut r)?;
+        let i64_variable_names = read_string_vec(&mut r)?;
+
         templates.push(vm2::Template {
             name,
             code,
-            vars_i64_num,
-            vars_ff_num,
             signals_num,
             number_of_inputs,
             components,
             inputs,
             outputs,
-            ff_variable_names: HashMap::new(),
-            i64_variable_names: HashMap::new(),
+            ff_variable_names,
+            i64_variable_names,
         });
     }
 
@@ -853,17 +915,15 @@ pub fn deserialize_witnesscalc_vm2_body<T: FieldOps>(
         let mut code = vec![0u8; code_len];
         r.read_exact(&mut code)?;
 
-        // Read function metadata
-        let vars_i64_num = r.read_u32::<LittleEndian>()? as usize;
-        let vars_ff_num = r.read_u32::<LittleEndian>()? as usize;
+        // Read variable name maps
+        let ff_variable_names = read_string_vec(&mut r)?;
+        let i64_variable_names = read_string_vec(&mut r)?;
 
         functions.push(vm2::Function {
             name,
             code,
-            vars_i64_num,
-            vars_ff_num,
-            ff_variable_names: HashMap::new(),
-            i64_variable_names: HashMap::new(),
+            ff_variable_names,
+            i64_variable_names,
         });
     }
 
@@ -1265,46 +1325,38 @@ mod tests {
                 vm2::Template {
                     name: "main".to_string(),
                     code: vec![1, 2, 3, 4, 5],
-                    vars_i64_num: 2,
-                    vars_ff_num: 3,
                     signals_num: 5,
                     number_of_inputs: 2,
                     components: vec![Some(1), None, Some(2)],
                     inputs: vec![vm2::Signal::Ff(vec![]), vm2::Signal::Bus(0, vec![2])],
                     outputs: vec![vm2::Signal::Ff(vec![3])],
-                    ff_variable_names: HashMap::new(),
-                    i64_variable_names: HashMap::new(),
+                    ff_variable_names: vec![],
+                    i64_variable_names: vec![],
                 },
                 vm2::Template {
                     name: "sub_template".to_string(),
                     code: vec![10, 20, 30],
-                    vars_i64_num: 1,
-                    vars_ff_num: 1,
                     signals_num: 3,
                     number_of_inputs: 1,
                     components: vec![],
                     inputs: vec![vm2::Signal::Ff(vec![])],
                     outputs: vec![vm2::Signal::Ff(vec![])],
-                    ff_variable_names: HashMap::new(),
-                    i64_variable_names: HashMap::new(),
+                    ff_variable_names: vec![],
+                    i64_variable_names: vec![],
                 },
             ],
             functions: vec![
                 vm2::Function {
                     name: "add".to_string(),
                     code: vec![100, 101, 102],
-                    vars_i64_num: 0,
-                    vars_ff_num: 2,
-                    ff_variable_names: HashMap::new(),
-                    i64_variable_names: HashMap::new(),
+                    ff_variable_names: vec![],
+                    i64_variable_names: vec![],
                 },
                 vm2::Function {
                     name: "mul".to_string(),
                     code: vec![200, 201],
-                    vars_i64_num: 1,
-                    vars_ff_num: 0,
-                    ff_variable_names: HashMap::new(),
-                    i64_variable_names: HashMap::new(),
+                    ff_variable_names: vec![],
+                    i64_variable_names: vec![],
                 },
             ],
             function_registry: HashMap::from([
@@ -1377,19 +1429,19 @@ mod tests {
         for (t1, t2) in circuit.templates.iter().zip(circuit2.templates.iter()) {
             assert_eq!(t1.name, t2.name);
             assert_eq!(t1.code, t2.code);
-            assert_eq!(t1.vars_i64_num, t2.vars_i64_num);
-            assert_eq!(t1.vars_ff_num, t2.vars_ff_num);
+            assert_eq!(t1.ff_variable_names, t2.ff_variable_names);
+            assert_eq!(t1.i64_variable_names, t2.i64_variable_names);
             assert_eq!(t1.signals_num, t2.signals_num);
             assert_eq!(t1.number_of_inputs, t2.number_of_inputs);
             assert_eq!(t1.components, t2.components);
         }
-        
+
         // Verify functions
         for (f1, f2) in circuit.functions.iter().zip(circuit2.functions.iter()) {
             assert_eq!(f1.name, f2.name);
             assert_eq!(f1.code, f2.code);
-            assert_eq!(f1.vars_i64_num, f2.vars_i64_num);
-            assert_eq!(f1.vars_ff_num, f2.vars_ff_num);
+            assert_eq!(f1.ff_variable_names, f2.ff_variable_names);
+            assert_eq!(f1.i64_variable_names, f2.i64_variable_names);
         }
         
         // Verify input_infos
@@ -1482,25 +1534,21 @@ mod tests {
                 vm2::Template {
                     name: "模板名称".to_string(), // Chinese characters
                     code: vec![1, 2, 3],
-                    vars_i64_num: 1,
-                    vars_ff_num: 1,
                     signals_num: 1,
                     number_of_inputs: 1,
                     components: vec![],
                     inputs: vec![vm2::Signal::Ff(vec![])],
                     outputs: vec![vm2::Signal::Ff(vec![])],
-                    ff_variable_names: HashMap::new(),
-                    i64_variable_names: HashMap::new(),
+                    ff_variable_names: vec![],
+                    i64_variable_names: vec![],
                 },
             ],
             functions: vec![
                 vm2::Function {
                     name: "función_española".to_string(), // Spanish characters
                     code: vec![4, 5, 6],
-                    vars_i64_num: 0,
-                    vars_ff_num: 1,
-                    ff_variable_names: HashMap::new(),
-                    i64_variable_names: HashMap::new(),
+                    ff_variable_names: vec![],
+                    i64_variable_names: vec![],
                 },
             ],
             function_registry: HashMap::from([
@@ -1559,5 +1607,119 @@ mod tests {
                 panic!("Expected Bus type");
             }
         }
+    }
+
+    #[test]
+    fn test_vm2_serialization_template_variable_names() {
+        let prime = BigUint::from(101u64);
+        let ff = Field::new(U64::new(101u64));
+
+        // Create template with populated variable name vectors
+        let ff_variable_names = vec![
+            "signal_a".to_string(),
+            "signal_b".to_string(),
+            "temp_result".to_string(),
+        ];
+
+        let i64_variable_names = vec![
+            "counter".to_string(),
+            "loop_idx".to_string(),
+        ];
+
+        let circuit = vm2::Circuit {
+            main_template_id: 0,
+            templates: vec![
+                vm2::Template {
+                    name: "TestTemplate".to_string(),
+                    code: vec![1, 2, 3],
+                    signals_num: 5,
+                    number_of_inputs: 1,
+                    components: vec![],
+                    inputs: vec![vm2::Signal::Ff(vec![])],
+                    outputs: vec![vm2::Signal::Ff(vec![])],
+                    ff_variable_names: ff_variable_names.clone(),
+                    i64_variable_names: i64_variable_names.clone(),
+                },
+            ],
+            functions: vec![],
+            function_registry: HashMap::new(),
+            field: ff.clone(),
+            witness: vec![],
+            signals_num: 5,
+            input_infos: vec![],
+            types: vec![],
+        };
+
+        // Serialize
+        let mut buf = Vec::new();
+        serialize_witnesscalc_vm2(&mut buf, &circuit).unwrap();
+
+        // Deserialize
+        let mut reader = std::io::Cursor::new(&buf);
+        let prime_read = read_witnesscalc_vm2_header(&mut reader).unwrap();
+        assert_eq!(prime_read, prime);
+
+        let circuit2 = deserialize_witnesscalc_vm2_body(&mut reader, ff).unwrap();
+
+        // Verify variable names are preserved
+        assert_eq!(circuit.templates[0].ff_variable_names, circuit2.templates[0].ff_variable_names,
+            "ff_variable_names should be preserved during serialization");
+        assert_eq!(circuit.templates[0].i64_variable_names, circuit2.templates[0].i64_variable_names,
+            "i64_variable_names should be preserved during serialization");
+    }
+
+    #[test]
+    fn test_vm2_serialization_function_variable_names() {
+        let prime = BigUint::from(101u64);
+        let ff = Field::new(U64::new(101u64));
+
+        // Create function with populated variable name vectors
+        let ff_variable_names = vec![
+            "param_x".to_string(),
+            "param_y".to_string(),
+            "result".to_string(),
+        ];
+
+        let i64_variable_names = vec![
+            "iteration".to_string(),
+        ];
+
+        let circuit = vm2::Circuit {
+            main_template_id: 0,
+            templates: vec![],
+            functions: vec![
+                vm2::Function {
+                    name: "TestFunction".to_string(),
+                    code: vec![10, 20, 30],
+                    ff_variable_names: ff_variable_names.clone(),
+                    i64_variable_names: i64_variable_names.clone(),
+                },
+            ],
+            function_registry: HashMap::from([
+                ("TestFunction".to_string(), 0),
+            ]),
+            field: ff.clone(),
+            witness: vec![],
+            signals_num: 0,
+            input_infos: vec![],
+            types: vec![],
+        };
+
+        // Serialize
+        let mut buf = Vec::new();
+        serialize_witnesscalc_vm2(&mut buf, &circuit).unwrap();
+
+        // Deserialize
+        let mut reader = std::io::Cursor::new(&buf);
+        let prime_read = read_witnesscalc_vm2_header(&mut reader).unwrap();
+        assert_eq!(prime_read, prime);
+
+        let circuit2 = deserialize_witnesscalc_vm2_body(&mut reader, ff).unwrap();
+
+        // Verify variable names are preserved
+        assert_eq!(circuit.functions[0].ff_variable_names, circuit2.functions[0].ff_variable_names,
+            "ff_variable_names should be preserved during serialization");
+        assert_eq!(circuit.functions[0].i64_variable_names, circuit2.functions[0].i64_variable_names,
+            "i64_variable_names should be preserved during serialization");
     }
 }

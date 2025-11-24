@@ -1784,7 +1784,7 @@ struct TmplCompilationCtx<'a> {
 }
 
 impl TmplCompilationCtx<'_> {
-    fn new(constants: &[U256]) -> TmplCompilationCtx {
+    fn new(constants: &[U256]) -> TmplCompilationCtx<'_> {
         TmplCompilationCtx {
             code: vec![],
             line_numbers: vec![],

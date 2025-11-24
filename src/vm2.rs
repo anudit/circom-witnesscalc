@@ -461,26 +461,22 @@ impl Signal {
 pub struct Template {
     pub name: String,
     pub code: Vec<u8>,
-    pub vars_i64_num: usize,
-    pub vars_ff_num: usize,
     pub signals_num: usize,
     pub number_of_inputs: usize,
     pub components: Vec<Option<usize>>,
     pub inputs: Vec<Signal>,
     pub outputs: Vec<Signal>,
     // Variable name mappings for debugging
-    pub ff_variable_names: HashMap<usize, String>,
-    pub i64_variable_names: HashMap<usize, String>,
+    pub ff_variable_names: Vec<String>,
+    pub i64_variable_names: Vec<String>,
 }
 
 pub struct Function {
     pub name: String,
     pub code: Vec<u8>,
-    pub vars_i64_num: usize,
-    pub vars_ff_num: usize,
     // Variable name mappings for debugging
-    pub ff_variable_names: HashMap<usize, String>,
-    pub i64_variable_names: HashMap<usize, String>,
+    pub ff_variable_names: Vec<String>,
+    pub i64_variable_names: Vec<String>,
 }
 
 fn read_instruction(code: &[u8], ip: usize) -> OpCode {
@@ -1013,8 +1009,8 @@ fn usize_from_code(
 
 pub fn disassemble_instruction_to_string<T>(
     code: &[u8], ip: usize, name: &str,
-    ff_variable_names: &HashMap<usize, String>,
-    i64_variable_names: &HashMap<usize, String>) -> (usize, String)
+    ff_variable_names: &[String],
+    i64_variable_names: &[String]) -> (usize, String)
 where
     T: FieldOps {
 
@@ -1047,7 +1043,7 @@ where
         OpCode::StoreVariableFf => {
             let var_idx: usize;
             (var_idx, ip) = usize_from_code(code, ip).unwrap();
-            let var_name = ff_variable_names.get(&var_idx)
+            let var_name = ff_variable_names.get(var_idx)
                 .map(|s| format!(" ({})", s))
                 .unwrap_or_default();
             output.push_str(&format!("StoreVariableFf: {}{}", var_idx, var_name));
@@ -1055,7 +1051,7 @@ where
         OpCode::StoreVariableI64 => {
             let var_idx: usize;
             (var_idx, ip) = usize_from_code(code, ip).unwrap();
-            let var_name = i64_variable_names.get(&var_idx)
+            let var_name = i64_variable_names.get(var_idx)
                 .map(|s| format!(" ({})", s))
                 .unwrap_or_default();
             output.push_str(&format!("StoreVariableI64: {}{}", var_idx, var_name));
@@ -1063,7 +1059,7 @@ where
         OpCode::LoadVariableI64 => {
             let var_idx: usize;
             (var_idx, ip) = usize_from_code(code, ip).unwrap();
-            let var_name = i64_variable_names.get(&var_idx)
+            let var_name = i64_variable_names.get(var_idx)
                 .map(|s| format!(" ({})", s))
                 .unwrap_or_default();
             output.push_str(&format!("LoadVariableI64: {}{}", var_idx, var_name));
@@ -1071,7 +1067,7 @@ where
         OpCode::LoadVariableFf => {
             let var_idx: usize;
             (var_idx, ip) = usize_from_code(code, ip).unwrap();
-            let var_name = ff_variable_names.get(&var_idx)
+            let var_name = ff_variable_names.get(var_idx)
                 .map(|s| format!(" ({})", s))
                 .unwrap_or_default();
             output.push_str(&format!("LoadVariableFf: {}{}", var_idx, var_name));
@@ -1218,7 +1214,7 @@ where
                         
                         output.push_str("ff.memory(");
                         if addr_is_variable {
-                            let var_name = i64_variable_names.get(&(addr_val as usize))
+                            let var_name = i64_variable_names.get(addr_val as usize)
                                 .map(|s| format!(" ({})", s))
                                 .unwrap_or_default();
                             output.push_str(&format!("var[{}]{}", addr_val, var_name));
@@ -1227,7 +1223,7 @@ where
                         }
                         output.push(',');
                         if size_is_variable {
-                            let var_name = i64_variable_names.get(&(size_val as usize))
+                            let var_name = i64_variable_names.get(size_val as usize)
                                 .map(|s| format!(" ({})", s))
                                 .unwrap_or_default();
                             output.push_str(&format!("var[{}]{}", size_val, var_name));
@@ -1247,7 +1243,7 @@ where
                         
                         output.push_str("i64.memory(");
                         if addr_is_variable {
-                            let var_name = i64_variable_names.get(&(addr_val as usize))
+                            let var_name = i64_variable_names.get(addr_val as usize)
                                 .map(|s| format!(" ({})", s))
                                 .unwrap_or_default();
                             output.push_str(&format!("var[{}]{}", addr_val, var_name));
@@ -1256,7 +1252,7 @@ where
                         }
                         output.push(',');
                         if size_is_variable {
-                            let var_name = i64_variable_names.get(&(size_val as usize))
+                            let var_name = i64_variable_names.get(size_val as usize)
                                 .map(|s| format!(" ({})", s))
                                 .unwrap_or_default();
                             output.push_str(&format!("var[{}]{}", size_val, var_name));
@@ -1276,7 +1272,7 @@ where
                         
                         output.push_str("signal(");
                         if idx_is_variable {
-                            let var_name = i64_variable_names.get(&(idx_val as usize))
+                            let var_name = i64_variable_names.get(idx_val as usize)
                                 .map(|s| format!(" ({})", s))
                                 .unwrap_or_default();
                             output.push_str(&format!("var[{}]{}", idx_val, var_name));
@@ -1285,7 +1281,7 @@ where
                         }
                         output.push(',');
                         if size_is_variable {
-                            let var_name = i64_variable_names.get(&(size_val as usize))
+                            let var_name = i64_variable_names.get(size_val as usize)
                                 .map(|s| format!(" ({})", s))
                                 .unwrap_or_default();
                             output.push_str(&format!("var[{}]{}", size_val, var_name));
@@ -1432,8 +1428,8 @@ where
 
 pub fn disassemble_instruction<T>(
     code: &[u8], ip: usize, name: &str,
-    ff_variable_names: &HashMap<usize, String>,
-    i64_variable_names: &HashMap<usize, String>) -> usize
+    ff_variable_names: &[String],
+    i64_variable_names: &[String]) -> usize
 where
     T: FieldOps {
     let (new_ip, output) = disassemble_instruction_to_string::<T>(
@@ -1448,7 +1444,7 @@ fn get_current_context<'a, T: FieldOps>(
     vm: &VM<T>,
     circuit: &'a Circuit<T>,
     component_tree: &Component<T>,
-) -> (&'a [u8], &'a str, &'a HashMap<usize, String>, &'a HashMap<usize, String>) {
+) -> (&'a [u8], &'a str, &'a Vec<String>, &'a Vec<String>) {
     match vm.current_execution_context {
         ExecutionContext::Template => (
             &circuit.templates[component_tree.template_id].code,
@@ -1551,9 +1547,9 @@ where
     // Initialize with template's variable counts (function calls will resize as needed)
     // TODO every time we switch the context, we should check the stacks have sufficient size
     vm.stack_ff.resize_with(
-        circuit.templates[component_tree.template_id].vars_ff_num, || None);
+        circuit.templates[component_tree.template_id].ff_variable_names.len(), || None);
     vm.stack_i64.resize_with(
-        circuit.templates[component_tree.template_id].vars_i64_num, || None);
+        circuit.templates[component_tree.template_id].i64_variable_names.len(), || None);
 
     #[cfg(feature = "debug_vm2")]
     let (mut code, mut name, mut ff_variable_names, mut i64_variable_names) = get_current_context(&vm, circuit, component_tree);
@@ -1628,7 +1624,7 @@ where
                 #[cfg(feature = "debug_vm2")]
                 {
                     let var_name = ff_variable_names
-                        .get(&var_idx)
+                        .get(var_idx)
                         .map(|s| format!(" ({})", s))
                         .unwrap_or_default();
                     println!("StoreVariableFf: {}{} = {}", var_idx, var_name, vm.stack_ff[vm.stack_base_pointer_ff + var_idx].unwrap());
@@ -1642,7 +1638,7 @@ where
                 #[cfg(feature = "debug_vm2")]
                 {
                     let var_name = i64_variable_names
-                        .get(&var_idx)
+                        .get(var_idx)
                         .map(|s| format!(" ({})", s))
                         .unwrap_or_default();
                     println!("StoreVariableI64: {}{} = {}", var_idx, var_name, vm.stack_i64[vm.stack_base_pointer_i64 + var_idx].unwrap());
@@ -1662,7 +1658,7 @@ where
                 #[cfg(feature = "debug_vm2")]
                 {
                     let var_name = i64_variable_names
-                        .get(&var_idx)
+                        .get(var_idx)
                         .map(|s| format!(" ({})", s))
                         .unwrap_or_default();
                     println!("LoadVariableI64: {}{} = {}", var_idx, var_name, var);
@@ -2114,8 +2110,8 @@ where
                 vm.memory_base_pointer_i64 = vm.memory_i64.len();
                 
                 // Allocate space for function's local variables
-                vm.stack_ff.resize(vm.stack_base_pointer_ff + circuit.functions[func_idx].vars_ff_num, None);
-                vm.stack_i64.resize(vm.stack_base_pointer_i64 + circuit.functions[func_idx].vars_i64_num, None);
+                vm.stack_ff.resize(vm.stack_base_pointer_ff + circuit.functions[func_idx].ff_variable_names.len(), None);
+                vm.stack_i64.resize(vm.stack_base_pointer_i64 + circuit.functions[func_idx].i64_variable_names.len(), None);
                 
                 // Process arguments and copy to function memory
                 process_function_arguments(

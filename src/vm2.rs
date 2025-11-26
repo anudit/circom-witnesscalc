@@ -1930,24 +1930,48 @@ where
                 let src_addr = vm.pop_usize()?;
                 let dst_addr = vm.pop_usize()?;
                 
-                // Pop call frame to get return context
+                // Pop the call frame to get return context
                 let call_frame = vm.call_stack.pop()
                     .ok_or(RuntimeError::CallStackUnderflow)?;
-                
-                // Copy memory from function's space to caller's space
+
+                #[cfg(feature = "debug_vm2")]
+                {
+                    println!("FfMReturn:");
+                }
+                // Copy memory from a function's space to caller's space
                 for i in 0..size {
                     let src_idx = src_addr + i + vm.memory_base_pointer_ff;
                     let dst_idx = dst_addr + i + call_frame.return_memory_base_pointer_ff;
-                    
+
                     if src_idx < vm.memory_ff.len() {
                         if dst_idx >= vm.memory_ff.len() {
                             vm.memory_ff.resize(dst_idx + 1, None);
                         }
-                        vm.memory_ff[dst_idx] = vm.memory_ff[src_idx];
-                        // Clean up function memory
-                        vm.memory_ff[src_idx] = None;
+                        #[cfg(feature = "debug_vm2")]
+                        {
+                            let val = match vm.memory_ff[src_idx] {
+                                Some(val) => val.to_string(),
+                                None => "None".to_string(),
+                            };
+                            println!("  {} -> {}: {}", src_idx, dst_idx, val);
+                        }
+                        if src_idx != dst_idx {
+                            vm.memory_ff[dst_idx] = vm.memory_ff[src_idx];
+                        }
+                    } else {
+                        return Err(Box::new(RuntimeError::MemoryAddressOutOfBounds));
                     }
                 }
+
+                // Shrink memory to remove function's garbage while preserving
+                // caller's space. This ensures the next memory growth
+                // initializes with None instead of stale values.
+                let mut memory_ff_size = vm.memory_base_pointer_ff;
+                let last_dst_idx = dst_addr + size + call_frame.return_memory_base_pointer_ff;
+                if last_dst_idx > memory_ff_size {
+                    memory_ff_size = last_dst_idx;
+                }
+                vm.memory_ff.resize(memory_ff_size, None);
                 
                 // Restore execution context
                 ip = call_frame.return_ip;
@@ -1957,7 +1981,7 @@ where
                 vm.memory_base_pointer_ff = call_frame.return_memory_base_pointer_ff;
                 vm.memory_base_pointer_i64 = call_frame.return_memory_base_pointer_i64;
                 
-                // Switch back to caller's execution context
+                // Switch back to the caller's execution context
                 #[cfg(feature = "debug_vm2")]
                 {
                     (code, name, ff_variable_names, i64_variable_names) = get_current_context(&vm, circuit, component_tree);
@@ -2102,7 +2126,7 @@ where
                 };
                 vm.call_stack.push(call_frame);
                 
-                // Set up new execution context
+                // Set up a new execution context
                 vm.current_execution_context = ExecutionContext::Function(func_idx);
                 vm.stack_base_pointer_ff = vm.stack_ff.len();
                 vm.stack_base_pointer_i64 = vm.stack_i64.len();

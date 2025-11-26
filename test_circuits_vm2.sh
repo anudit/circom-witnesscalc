@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-set -eux
+set -eu
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${script_dir}/check_witnesscalc.sh"
@@ -170,6 +170,13 @@ function test_circuit() {
   pushd "$workdir" > /dev/null
 
   # Run Circom to generate assembly file.
+  circom_cmd="circom --r1cs --cvm --wasm $circom_cvm_flags"
+  for arg in "${include_args[@]}"; do
+    circom_cmd+=" $(printf '%q' "$arg")"
+  done
+  circom_cmd+=" $(printf '%q' "$circuit_path")"
+  echo "Executing circom command:"
+  echo "$circom_cmd"
   time circom --r1cs --cvm --wasm $circom_cvm_flags "${include_args[@]}" "$circuit_path"
 
   # run commands from the project directory

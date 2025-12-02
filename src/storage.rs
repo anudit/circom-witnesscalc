@@ -129,7 +129,7 @@ fn read_string_vec<R: Read>(r: &mut R) -> std::io::Result<Vec<String>> {
 
 pub mod proto_deserializer;
 
-pub(crate) const WITNESSCALC_GRAPH_MAGIC: &[u8] = b"wtns.graph.001";
+pub(crate) const WITNESSCALC_GRAPH_MAGIC: &[u8] = b"wtns.graph.002";
 const WITNESSCALC_VM_MAGIC: &[u8] = b"wtns.vm.001";
 pub(crate) const WITNESSCALC_CVM_MAGIC: &[u8] = b"wtns.cvm.001";
 

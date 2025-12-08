@@ -861,4 +861,6 @@ mod tests {
         ];
         assert_eq!(paths_d, want_d);
     }
+
+    include!("vm2_setup_tests.rs");
 }

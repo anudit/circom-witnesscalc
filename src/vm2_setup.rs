@@ -744,4 +744,121 @@ mod tests {
         want.insert("v.v[1].end.y".to_string(), U254::from_str("11").unwrap());
         assert_eq!(want, result);
     }
+
+    #[test]
+    fn test_expand_input_info_to_signal_paths() {
+        use crate::vm2::{Type, TypeField, TypeFieldKind};
+
+        // bus_0: { x: Ff[2], y: Ff } → size 3
+        // bus_1: { start: Bus(0)[2], end: Bus(0) } → size 9
+        let types = vec![
+            Type {
+                name: "bus_0".to_string(),
+                fields: vec![
+                    TypeField { name: "x".to_string(), kind: TypeFieldKind::Ff, offset: 0, size: 1, dims: vec![2] },
+                    TypeField { name: "y".to_string(), kind: TypeFieldKind::Ff, offset: 2, size: 1, dims: vec![] },
+                ],
+            },
+            Type {
+                name: "bus_1".to_string(),
+                fields: vec![
+                    TypeField { name: "start".to_string(), kind: TypeFieldKind::Bus(0), offset: 0, size: 3, dims: vec![2] },
+                    TypeField { name: "end".to_string(), kind: TypeFieldKind::Bus(0), offset: 6, size: 3, dims: vec![] },
+                ],
+            },
+        ];
+
+        // Test "a": Ff[2][3] at offset 7
+        let input_a = InputInfo {
+            name: "a".to_string(),
+            offset: 7,
+            lengths: vec![2, 3],
+            type_id: None,
+        };
+        let paths_a = expand_input_info_to_signal_paths(&input_a, &types).unwrap();
+        let want_a: Vec<(String, usize)> = vec![
+            ("a[0][0]".to_string(), 7),
+            ("a[0][1]".to_string(), 8),
+            ("a[0][2]".to_string(), 9),
+            ("a[1][0]".to_string(), 10),
+            ("a[1][1]".to_string(), 11),
+            ("a[1][2]".to_string(), 12),
+        ];
+        assert_eq!(paths_a, want_a);
+
+        // Test "b": Ff[3][2] at offset 13
+        let input_b = InputInfo {
+            name: "b".to_string(),
+            offset: 13,
+            lengths: vec![3, 2],
+            type_id: None,
+        };
+        let paths_b = expand_input_info_to_signal_paths(&input_b, &types).unwrap();
+        let want_b: Vec<(String, usize)> = vec![
+            ("b[0][0]".to_string(), 13),
+            ("b[0][1]".to_string(), 14),
+            ("b[1][0]".to_string(), 15),
+            ("b[1][1]".to_string(), 16),
+            ("b[2][0]".to_string(), 17),
+            ("b[2][1]".to_string(), 18),
+        ];
+        assert_eq!(paths_b, want_b);
+
+        // Test "c": bus_1 (single) at offset 19
+        // bus_1 expands to: start[0].x[0], start[0].x[1], start[0].y,
+        //                   start[1].x[0], start[1].x[1], start[1].y,
+        //                   end.x[0], end.x[1], end.y
+        let input_c = InputInfo {
+            name: "c".to_string(),
+            offset: 19,
+            lengths: vec![],
+            type_id: Some("bus_1".to_string()),
+        };
+        let paths_c = expand_input_info_to_signal_paths(&input_c, &types).unwrap();
+        let want_c: Vec<(String, usize)> = vec![
+            ("c.start[0].x[0]".to_string(), 19),
+            ("c.start[0].x[1]".to_string(), 20),
+            ("c.start[0].y".to_string(), 21),
+            ("c.start[1].x[0]".to_string(), 22),
+            ("c.start[1].x[1]".to_string(), 23),
+            ("c.start[1].y".to_string(), 24),
+            ("c.end.x[0]".to_string(), 25),
+            ("c.end.x[1]".to_string(), 26),
+            ("c.end.y".to_string(), 27),
+        ];
+        assert_eq!(paths_c, want_c);
+
+        // Test "d": bus_1[2] at offset 28
+        // Two bus_1 instances, each with 9 signals
+        let input_d = InputInfo {
+            name: "d".to_string(),
+            offset: 28,
+            lengths: vec![2],
+            type_id: Some("bus_1".to_string()),
+        };
+        let paths_d = expand_input_info_to_signal_paths(&input_d, &types).unwrap();
+        let want_d: Vec<(String, usize)> = vec![
+            // d[0]
+            ("d[0].start[0].x[0]".to_string(), 28),
+            ("d[0].start[0].x[1]".to_string(), 29),
+            ("d[0].start[0].y".to_string(), 30),
+            ("d[0].start[1].x[0]".to_string(), 31),
+            ("d[0].start[1].x[1]".to_string(), 32),
+            ("d[0].start[1].y".to_string(), 33),
+            ("d[0].end.x[0]".to_string(), 34),
+            ("d[0].end.x[1]".to_string(), 35),
+            ("d[0].end.y".to_string(), 36),
+            // d[1]
+            ("d[1].start[0].x[0]".to_string(), 37),
+            ("d[1].start[0].x[1]".to_string(), 38),
+            ("d[1].start[0].y".to_string(), 39),
+            ("d[1].start[1].x[0]".to_string(), 40),
+            ("d[1].start[1].x[1]".to_string(), 41),
+            ("d[1].start[1].y".to_string(), 42),
+            ("d[1].end.x[0]".to_string(), 43),
+            ("d[1].end.x[1]".to_string(), 44),
+            ("d[1].end.y".to_string(), 45),
+        ];
+        assert_eq!(paths_d, want_d);
+    }
 }

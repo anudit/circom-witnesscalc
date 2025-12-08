@@ -50,6 +50,28 @@ where
             }
         }
 
+        // Try converting bus-as-array path to field path (e.g., "c.start[0][2]" -> "c.start[0].y")
+        if let Some(field_path) = try_convert_bus_array_to_field_path(path, input_infos, types) {
+            if let Some(&signal_idx) = signal_path_to_idx.get(&field_path) {
+                signal_path_to_idx.remove(&field_path);
+                component.set_signal(signal_idx-1, *value).map_err(|e| -> Box<dyn Error> {e})?;
+                continue;
+            }
+        }
+
+        // Try converting root array index to signal offset (e.g., "[0]" -> first input signal)
+        if let Some(signal_idx) = try_convert_root_array_to_signal_idx(path, input_infos) {
+            // Find and remove the corresponding path from signal_path_to_idx
+            let path_to_remove = signal_path_to_idx.iter()
+                .find(|(_, &idx)| idx == signal_idx)
+                .map(|(p, _)| p.clone());
+            if let Some(p) = path_to_remove {
+                signal_path_to_idx.remove(&p);
+                component.set_signal(signal_idx-1, *value).map_err(|e| -> Box<dyn Error> {e})?;
+                continue;
+            }
+        }
+
         return Err(format!("signal {} is not found in input infos", path).into());
     }
 
@@ -248,6 +270,319 @@ fn try_convert_flat_to_multidim_path(
     None
 }
 
+/// Convert a bus-as-array path to a field path.
+/// For example, if we have a bus Point { x[2], y } and the input is provided as an array [1, 2, 3],
+/// this converts "c.start[0][2]" to "c.start[0].y".
+fn try_convert_bus_array_to_field_path(
+    path: &str,
+    input_infos: &[InputInfo],
+    types: &[Type],
+) -> Option<String> {
+    // Find the input info that this path belongs to
+    for input_info in input_infos {
+        // Skip non-bus inputs
+        let type_id = match input_info.type_id.as_ref() {
+            Some(id) => id,
+            None => continue,
+        };
+
+        // Check if path starts with this input's name
+        if !path.starts_with(&input_info.name) {
+            continue;
+        }
+
+        let suffix = &path[input_info.name.len()..];
+
+        // Find the bus type
+        let bus_type = match types.iter().find(|t| &t.name == type_id) {
+            Some(t) => t,
+            None => continue,
+        };
+
+        // If the input is a bus array, extract the array indices first
+        if !input_info.lengths.is_empty() {
+            // Extract array indices from suffix (e.g., "[0][3]" -> array_indices="[0]", bus_suffix="[3]")
+            let (array_indices, bus_suffix) = extract_array_indices(suffix, input_info.lengths.len())?;
+
+            // Convert the remaining suffix within the bus type
+            if let Some(converted) = convert_bus_content_to_field_path(bus_suffix, bus_type, types) {
+                return Some(format!("{}{}{}", input_info.name, array_indices, converted));
+            }
+        } else {
+            // Single bus instance - convert the suffix directly
+            if let Some(converted) = convert_array_suffix_to_field_path(suffix, bus_type, types) {
+                return Some(format!("{}{}", input_info.name, converted));
+            }
+        }
+    }
+
+    None
+}
+
+/// Convert a root array index path (e.g., "[5]") to a signal index.
+/// This handles the case where all inputs are provided as a single flat array.
+fn try_convert_root_array_to_signal_idx(
+    path: &str,
+    input_infos: &[InputInfo],
+) -> Option<usize> {
+    // Check if path is a root array index like "[5]"
+    if !path.starts_with('[') {
+        return None;
+    }
+
+    let close_bracket = path.find(']')?;
+    let idx_str = &path[1..close_bracket];
+    let flat_idx = idx_str.parse::<usize>().ok()?;
+
+    // Calculate total input size from offsets
+    // The flat index maps directly to signal offsets starting from the first input's offset
+    let first_offset = input_infos.first()?.offset;
+    Some(first_offset + flat_idx)
+}
+
+/// Extract array indices from a suffix based on expected number of dimensions.
+/// E.g., for suffix "[0][3][5]" and num_dims=2, returns ("[0][3]", "[5]")
+fn extract_array_indices(suffix: &str, num_dims: usize) -> Option<(String, &str)> {
+    let mut array_indices = String::new();
+    let mut remaining = suffix;
+
+    for _ in 0..num_dims {
+        if !remaining.starts_with('[') {
+            return None;
+        }
+        let close_bracket = remaining.find(']')?;
+        array_indices.push_str(&remaining[..=close_bracket]);
+        remaining = &remaining[close_bracket + 1..];
+    }
+
+    Some((array_indices, remaining))
+}
+
+/// Convert bus content (after array indices) to field path.
+/// This handles flat array indexing within a bus type.
+fn convert_bus_content_to_field_path(
+    suffix: &str,
+    bus_type: &Type,
+    types: &[Type],
+) -> Option<String> {
+    if suffix.is_empty() {
+        return Some(String::new());
+    }
+
+    // If suffix starts with '[', it's a flat index into the bus
+    if suffix.starts_with('[') {
+        let close_bracket = suffix.find(']')?;
+        let idx_str = &suffix[1..close_bracket];
+        let remaining = &suffix[close_bracket + 1..];
+
+        if let Ok(flat_idx) = idx_str.parse::<usize>() {
+            if let Some((field_path, new_remaining)) = flat_idx_to_field_path(flat_idx, remaining, bus_type, types) {
+                return Some(field_path + &new_remaining);
+            }
+        }
+    }
+
+    // Otherwise, use the existing conversion logic
+    convert_array_suffix_to_field_path(suffix, bus_type, types)
+}
+
+/// Recursively convert array indices to field paths within a bus type.
+/// E.g., for bus Point { x[2], y }, converts "[0][2]" to "[0].y"
+fn convert_array_suffix_to_field_path(
+    suffix: &str,
+    bus_type: &Type,
+    types: &[Type],
+) -> Option<String> {
+    if suffix.is_empty() {
+        return Some(String::new());
+    }
+
+    // Handle array access at current level (e.g., "[0]" for bus array)
+    if suffix.starts_with('[') {
+        // Find the closing bracket
+        let close_bracket = suffix.find(']')?;
+        let idx_str = &suffix[1..close_bracket];
+        let remaining = &suffix[close_bracket + 1..];
+
+        // Check if this is a flat index into bus fields (no more dots before next bracket)
+        if let Ok(flat_idx) = idx_str.parse::<usize>() {
+            // First, try treating this as an array index (for bus arrays like "start[0]")
+            // If remaining starts with '.', it's a field access on a bus array element
+            if let Some(field_part) = remaining.strip_prefix('.') {
+                // This is array access followed by field access: "[0].field..."
+                let (field_name, rest) = split_at_next_delimiter(field_part);
+
+                // Find this field in the bus type
+                for field in &bus_type.fields {
+                    if field.name == field_name {
+                        match &field.kind {
+                            TypeFieldKind::Bus(nested_bus_idx) => {
+                                let nested_type = types.get(*nested_bus_idx)?;
+                                let converted_rest = convert_array_suffix_to_field_path(rest, nested_type, types)?;
+                                return Some(format!("[{}].{}{}", flat_idx, field_name, converted_rest));
+                            }
+                            TypeFieldKind::Ff => {
+                                return Some(format!("[{}].{}{}", flat_idx, field_name, rest));
+                            }
+                        }
+                    }
+                }
+                return None;
+            }
+
+            // Check if remaining is another bracket (flat index into bus signals)
+            if remaining.starts_with('[') || remaining.is_empty() {
+                // This might be a flat index into bus fields
+                // Calculate which field and sub-index this flat index maps to
+                if let Some((field_path, new_remaining)) = flat_idx_to_field_path(flat_idx, remaining, bus_type, types) {
+                    return Some(field_path + &new_remaining);
+                }
+
+                // Otherwise treat as regular array index
+                let converted_rest = convert_array_suffix_to_field_path(remaining, bus_type, types)?;
+                return Some(format!("[{}]{}", flat_idx, converted_rest));
+            }
+        }
+    }
+
+    // Handle field access (e.g., ".field")
+    if let Some(field_part) = suffix.strip_prefix('.') {
+        let (field_name, rest) = split_at_next_delimiter(field_part);
+
+        for field in &bus_type.fields {
+            if field.name == field_name {
+                match &field.kind {
+                    TypeFieldKind::Bus(nested_bus_idx) => {
+                        let nested_type = types.get(*nested_bus_idx)?;
+
+                        // Check if this field is a bus array
+                        if !field.dims.is_empty() && rest.starts_with('[') {
+                            // Extract array index and remaining part
+                            let close_bracket = rest.find(']')?;
+                            let array_idx_str = &rest[1..close_bracket];
+                            let after_array = &rest[close_bracket + 1..];
+
+                            if let Ok(array_idx) = array_idx_str.parse::<usize>() {
+                                // Recurse into the nested bus type with remaining suffix
+                                let converted_rest = convert_array_suffix_to_field_path(after_array, nested_type, types)?;
+                                return Some(format!(".{}[{}]{}", field_name, array_idx, converted_rest));
+                            }
+                        }
+
+                        let converted_rest = convert_array_suffix_to_field_path(rest, nested_type, types)?;
+                        return Some(format!(".{}{}", field_name, converted_rest));
+                    }
+                    TypeFieldKind::Ff => {
+                        return Some(format!(".{}{}", field_name, rest));
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Convert a flat index within a bus to the corresponding field path.
+/// E.g., for bus Point { x[2], y }, flat_idx=2 maps to ".y"
+fn flat_idx_to_field_path(
+    flat_idx: usize,
+    remaining: &str,
+    bus_type: &Type,
+    types: &[Type],
+) -> Option<(String, String)> {
+    let mut current_offset = 0;
+
+    for field in &bus_type.fields {
+        let field_size = calculate_field_total_size(field, types);
+
+        if flat_idx < current_offset + field_size {
+            // This flat index falls within this field
+            let idx_within_field = flat_idx - current_offset;
+
+            match &field.kind {
+                TypeFieldKind::Ff => {
+                    if field.dims.is_empty() {
+                        // Scalar field - flat_idx must be exactly at this position
+                        if idx_within_field == 0 {
+                            return Some((format!(".{}", field.name), remaining.to_string()));
+                        }
+                    } else {
+                        // Array field - convert to array index
+                        let array_indices = flat_to_multidim_indices(idx_within_field, &field.dims);
+                        let mut path = format!(".{}", field.name);
+                        for idx in array_indices {
+                            path.push_str(&format!("[{}]", idx));
+                        }
+                        return Some((path, remaining.to_string()));
+                    }
+                }
+                TypeFieldKind::Bus(nested_bus_idx) => {
+                    let nested_type = types.get(*nested_bus_idx)?;
+                    let nested_bus_size = calculate_bus_total_size(nested_type, types);
+
+                    if field.dims.is_empty() {
+                        // Single nested bus
+                        let (nested_path, new_remaining) = flat_idx_to_field_path(idx_within_field, remaining, nested_type, types)?;
+                        return Some((format!(".{}{}", field.name, nested_path), new_remaining));
+                    } else {
+                        // Array of nested buses
+                        let bus_array_idx = idx_within_field / nested_bus_size;
+                        let idx_within_nested_bus = idx_within_field % nested_bus_size;
+                        let (nested_path, new_remaining) = flat_idx_to_field_path(idx_within_nested_bus, remaining, nested_type, types)?;
+                        return Some((format!(".{}[{}]{}", field.name, bus_array_idx, nested_path), new_remaining));
+                    }
+                }
+            }
+        }
+
+        current_offset += field_size;
+    }
+
+    None
+}
+
+/// Calculate the total size of a field including array dimensions
+fn calculate_field_total_size(field: &crate::vm2::TypeField, types: &[Type]) -> usize {
+    let base_size = match &field.kind {
+        TypeFieldKind::Ff => 1,
+        TypeFieldKind::Bus(bus_idx) => {
+            let bus_type = &types[*bus_idx];
+            calculate_bus_total_size(bus_type, types)
+        }
+    };
+
+    if field.dims.is_empty() {
+        base_size
+    } else {
+        let array_size: usize = field.dims.iter().product();
+        base_size * array_size
+    }
+}
+
+/// Calculate the total size of a bus type
+fn calculate_bus_total_size(bus_type: &Type, types: &[Type]) -> usize {
+    bus_type.fields.iter()
+        .map(|f| calculate_field_total_size(f, types))
+        .sum()
+}
+
+/// Split a string at the next '[' or '.' delimiter
+fn split_at_next_delimiter(s: &str) -> (&str, &str) {
+    let bracket_pos = s.find('[');
+    let dot_pos = s.find('.');
+
+    match (bracket_pos, dot_pos) {
+        (Some(b), Some(d)) => {
+            let pos = b.min(d);
+            (&s[..pos], &s[pos..])
+        }
+        (Some(b), None) => (&s[..b], &s[b..]),
+        (None, Some(d)) => (&s[..d], &s[d..]),
+        (None, None) => (s, ""),
+    }
+}
+
 fn parse_signals_json<T: FieldOps, F>(
     inputs_data: impl std::io::Read,
     ff: &F) -> Result<HashMap<String, T>, Box<dyn std::error::Error>>
@@ -300,11 +635,12 @@ where
             records.insert(prefix.to_string(), ff.parse_str(s)?);
         },
         serde_json::Value::Array(vs) => {
-            if prefix.is_empty() {
-                return Err("array value cannot be at the root".into());
-            }
             for (i, v) in vs.iter().enumerate() {
-                let new_prefix = format!("{}[{}]", prefix, i);
+                let new_prefix = if prefix.is_empty() {
+                    format!("[{}]", i)
+                } else {
+                    format!("{}[{}]", prefix, i)
+                };
                 visit_inputs_json(&new_prefix, v, records, ff)?;
             }
         },

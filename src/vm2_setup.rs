@@ -123,10 +123,19 @@ fn calculate_offset_from_suffix(suffix: &str, info: &InputInfo, types: &[Type]) 
 
     // Handle input array indexing first
     if !info.lengths.is_empty() {
+        // Calculate total size of this input
+        let bus_size = bus_type.map(|b| calculate_bus_total_size(b, types)).unwrap_or(1);
+        let array_count: usize = info.lengths.iter().product();
+        let total_size = array_count * bus_size;
+
+        // Try as flat index first (simple "[N]" with no further access)
+        if let Some(flat_idx) = try_parse_flat_index(suffix, total_size) {
+            return Some(flat_idx);
+        }
+
         let (array_offset, remaining) = parse_array_indices(suffix, &info.lengths)?;
 
         if let Some(bus) = bus_type {
-            let bus_size = calculate_bus_total_size(bus, types);
             let inner_offset = calculate_bus_offset(remaining, bus, types)?;
             Some(array_offset * bus_size + inner_offset)
         } else {
@@ -147,6 +156,26 @@ fn calculate_offset_from_suffix(suffix: &str, info: &InputInfo, types: &[Type]) 
         } else {
             None
         }
+    }
+}
+
+/// Try to parse a flat index that spans the full input size
+/// Returns Some(idx) if suffix is "[N]" where N < total_size (simple flat index, no further access)
+fn try_parse_flat_index(suffix: &str, total_size: usize) -> Option<usize> {
+    if !suffix.starts_with('[') {
+        return None;
+    }
+    let close = suffix.find(']')?;
+    let after = &suffix[close + 1..];
+    if !after.is_empty() {
+        return None; // Not a simple flat index (has further access like ".field" or "[N]")
+    }
+    let idx: usize = suffix[1..close].parse().ok()?;
+
+    if idx < total_size {
+        Some(idx)
+    } else {
+        None
     }
 }
 

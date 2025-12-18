@@ -278,15 +278,15 @@ fn test_init_signals_flat_bus_arrays() {
     component.write_all_signals(&mut signals);
 
     // Verify the first 3 signals are None (signals 0-2 are outputs)
-    for i in 0..3 {
-        assert_eq!(signals[i], None, "signal {} should be None", i);
+    for (i, signal) in signals.iter().enumerate().take(3) {
+        assert_eq!(*signal, None, "signal {} should be None", i);
     }
 
     // Input signals at indices 3-106 should be 1-104
-    for i in 3..107 {
+    for (i, signal) in signals.iter().enumerate().take(107).skip(3) {
         let expected_value = (i - 2) as u64; // i=3 -> 1, i=4 -> 2, etc.
         assert_eq!(
-            signals[i],
+            *signal,
             Some(U254::from(expected_value)),
             "signal {} should be {}", i, expected_value
         );

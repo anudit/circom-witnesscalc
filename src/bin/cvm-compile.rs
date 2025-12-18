@@ -1438,8 +1438,8 @@ mod tests {
     }
 
     fn capture_disassembly(
-        name: &str, code: &[u8], ff_variable_names: &Vec<String>,
-        i64_variable_names: &Vec<String>) -> String {
+        name: &str, code: &[u8], ff_variable_names: &[String],
+        i64_variable_names: &[String]) -> String {
 
         let mut actual_output = String::new();
         let mut ip: usize = 0;

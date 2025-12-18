@@ -1491,7 +1491,7 @@ fn get_current_context<'a, T: FieldOps>(
 }
 
 #[cfg(feature = "parallel_components")]
-fn spawn_component_execution<'scope, 'env, F, T: FieldOps>(
+fn spawn_component_execution<'scope, 'env, F, T>(
     scope: &'scope std::thread::Scope<'scope, 'env>,
     circuit: &'env Circuit<T>,
     ff: &'env F,
@@ -1499,7 +1499,7 @@ fn spawn_component_execution<'scope, 'env, F, T: FieldOps>(
 )
 where
     for <'a> &'a F: FieldOperations<Type = T>,
-    T: 'env,
+    T: FieldOps + 'env,
 {
     let pair = Arc::new((Mutex::new(false), Condvar::new()));
     let pair2 = Arc::clone(&pair);

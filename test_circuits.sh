@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-set -eux
+set -eu
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${script_dir}/check_witnesscalc.sh"

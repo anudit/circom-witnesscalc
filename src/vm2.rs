@@ -503,6 +503,8 @@ pub enum RuntimeError {
     StackVariableIsNotSet,
     #[error("Failed to convert from i32 to usize")]
     I32ToUsizeConversion,
+    #[error("Failed to convert from usize to i64")]
+    UsizeToI64Conversion,
     #[error("Signal index is out of bounds")]
     SignalIndexOutOfBounds,
     #[error("Signal is not set:\n{0}")]
@@ -533,6 +535,12 @@ pub enum RuntimeError {
     SignalIdOutOfBounds(usize, usize),
     #[error("Dimension index {0} is out of bounds (signal has {1} dimensions)")]
     DimensionIndexOutOfBounds(usize, usize),
+    #[error("Invalid type ID: {0}")]
+    InvalidTypeId(usize),
+    #[error("Invalid field ID: {1}, type ID: {0}")]
+    InvalidFieldId(usize, usize),
+    #[error("Operation overflows")]
+    OperationOverflows
 }
 
 #[derive(Debug, Clone)]
@@ -608,6 +616,13 @@ impl<T: FieldOps> VM<T> {
         self.stack_i64
             .pop().ok_or(RuntimeError::StackUnderflow)?
             .ok_or(RuntimeError::StackVariableIsNotSet)
+    }
+
+    fn push_usize(&mut self, value: usize) -> Result<(), RuntimeError> {
+        let v: i64 = value.try_into()
+            .map_err(|_| RuntimeError::UsizeToI64Conversion)?;
+        self.push_i64(v);
+        Ok(())
     }
 
     fn pop_usize(&mut self) -> Result<usize, RuntimeError> {
@@ -1476,7 +1491,7 @@ fn get_current_context<'a, T: FieldOps>(
 }
 
 #[cfg(feature = "parallel_components")]
-fn spawn_component_execution<'scope, 'env, F, T: FieldOps>(
+fn spawn_component_execution<'scope, 'env, F, T>(
     scope: &'scope std::thread::Scope<'scope, 'env>,
     circuit: &'env Circuit<T>,
     ff: &'env F,
@@ -1484,7 +1499,7 @@ fn spawn_component_execution<'scope, 'env, F, T: FieldOps>(
 )
 where
     for <'a> &'a F: FieldOperations<Type = T>,
-    T: 'env,
+    T: FieldOps + 'env,
 {
     let pair = Arc::new((Mutex::new(false), Condvar::new()));
     let pair2 = Arc::clone(&pair);
@@ -2557,26 +2572,33 @@ where
                 let bus_type_id = vm.pop_usize()?;
                 let field_id = vm.pop_usize()?;
 
+                if bus_type_id == 0 {
+                    return Err(Box::new(RuntimeError::InvalidTypeId(0)));
+                }
+
+                // type ID 0 is FF. Buses start from index 1
+                let bus_type_id = bus_type_id - 1;
+
                 if bus_type_id >= circuit.types.len() {
-                    return Err(Box::new(RuntimeError::InvalidTemplateId(bus_type_id)));
+                    return Err(Box::new(RuntimeError::InvalidTypeId(bus_type_id+1)));
                 }
 
                 let bus_type = &circuit.types[bus_type_id];
 
                 if field_id >= bus_type.fields.len() {
-                    return Err(Box::new(RuntimeError::SignalIdOutOfBounds(
-                        field_id,
-                        bus_type.fields.len(),
-                    )));
+                    return Err(Box::new(RuntimeError::InvalidFieldId(
+                        bus_type_id + 1, field_id)));
                 }
 
                 let field = &bus_type.fields[field_id];
-                let type_id: i64 = match field.kind {
-                    TypeFieldKind::Ff => -1,
-                    TypeFieldKind::Bus(inner_type_id) => inner_type_id as i64,
+                let type_id = match field.kind {
+                    TypeFieldKind::Ff => 0,
+                    TypeFieldKind::Bus(bus_idx) => bus_idx
+                        .checked_add(1)
+                        .ok_or(Box::new(RuntimeError::OperationOverflows))?,
                 };
 
-                vm.push_i64(type_id);
+                vm.push_usize(type_id)?;
 
                 #[cfg(feature = "debug_vm2")]
                 {

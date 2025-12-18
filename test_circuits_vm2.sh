@@ -29,11 +29,14 @@ if [ ! -d "$workdir" ]; then
 fi
 
 print_usage() {
-    echo "Usage: $0 [-h] [-l <include_path>] [-i <inputs_path>] [-f <features>] [-m <mode>] [-c <circom_flags>] [file1 ...]"
+    echo "Usage: $0 [-h] [-l <include_path>] [-i <inputs_path>] [-w <etalon_wtns>] [-f <features>] [-m <mode>] [-c <circom_flags>] [file1 ...]"
     echo
     echo "Options:"
     echo "  -l <include_path>      Path to include directory. Can be specified multiple times"
     echo "  -i <inputs_path>       Path to custom inputs JSON file. Requires exactly one circuit file argument"
+    echo "  -w <etalon_wtns>       Path to etalon witness file for byte-by-byte comparison."
+    echo "                         Skips WASM witness generation and constraint checking."
+    echo "                         Requires exactly one circuit file argument"
     echo "  -f <features>          Comma-separated list of cargo features to enable during build"
     echo "                         Example: -f debug_vm2,parallel_components"
     echo "  -m <mode>              Execution mode: 'direct' or 'split' (default: direct)"
@@ -52,6 +55,7 @@ print_usage() {
     echo "Examples:"
     echo "  $0 test_circuits/circuit1.circom"
     echo "  $0 -i custom_inputs.json test_circuits/circuit1.circom"
+    echo "  $0 -w reference.wtns test_circuits/circuit1.circom"
     echo "  $0 -f debug_vm2 test_circuits/circuit1.circom"
     echo "  $0 -m split test_circuits/circuit1.circom"
     echo "  $0 -c \"\" test_circuits/circuit1.circom  # Disable cvm_multi_assign"
@@ -60,11 +64,12 @@ print_usage() {
 
 declare -a library_paths
 custom_inputs_path=""
+etalon_witness_path=""
 cargo_features=""
 execution_mode="direct"
 circom_cvm_flags="--cvm_multi_assign"
 
-while getopts ":l:i:f:m:c:h" opt; do
+while getopts ":l:i:w:f:m:c:h" opt; do
   case $opt in
     h)
         print_usage
@@ -75,6 +80,9 @@ while getopts ":l:i:f:m:c:h" opt; do
         ;;
     i)
         custom_inputs_path="$OPTARG"
+        ;;
+    w)
+        etalon_witness_path="$OPTARG"
         ;;
     f)
         cargo_features="$OPTARG"
@@ -118,6 +126,20 @@ if [ -n "$custom_inputs_path" ]; then
     fi
 fi
 
+# Validate that -w requires exactly one circuit file
+if [ -n "$etalon_witness_path" ]; then
+    if [ $# -ne 1 ]; then
+        echo "Error: -w option requires exactly one circuit file argument" >&2
+        echo "Found $# circuit file argument(s)" >&2
+        print_usage
+        exit 1
+    fi
+    if [ ! -f "$etalon_witness_path" ]; then
+        echo "Error: Etalon witness file not found at $etalon_witness_path" >&2
+        exit 1
+    fi
+fi
+
 if [ ${#library_paths} -eq 0 ]; then
     library_paths+=("${script_dir}/test_deps/circomlib/circuits")
 fi
@@ -146,6 +168,7 @@ function test_circuit() {
   local circuit_path=$1
   local custom_inputs=$2
   local mode=$3
+  local etalon_wtns=$4
   echo "Running $circuit_path (mode: $mode)"
   local circuit_name
   circuit_name="$(basename "$circuit_path")" && circuit_name="${circuit_name%%.*}"
@@ -196,20 +219,29 @@ function test_circuit() {
 
   popd > /dev/null
 
-  echo "Generate WASM witness"
-  time node "${circuit_name}"_js/generate_witness.js "${circuit_name}"_js/"${circuit_name}".wasm "${inputs_path}" "${witness_path}2"
+  if [ -n "$etalon_wtns" ]; then
+    echo "Comparing CVM witness with etalon witness (byte-by-byte)"
+    if ! cmp -s "${witness_path}" "${etalon_wtns}"; then
+      echo -e "${RED}CVM witness does not match etalon witness${NC}"
+      exit 1
+    fi
+    echo -e "${GREEN}CVM witness matches etalon witness${NC}"
+  else
+    echo "Generate WASM witness"
+    time node "${circuit_name}"_js/generate_witness.js "${circuit_name}"_js/"${circuit_name}".wasm "${inputs_path}" "${witness_path}2"
 
-  snarkjs wej "${witness_path}" "${witness_path}.json"
-  snarkjs wej "${witness_path}2" "${witness_path}2.json"
+    snarkjs wej "${witness_path}" "${witness_path}.json"
+    snarkjs wej "${witness_path}2" "${witness_path}2.json"
 
-  echo "Check CVM witness"
-  snarkjs wtns check "${r1cs_path}" "${witness_path}"
-  echo "Check WASM witness"
-  snarkjs wtns check "${r1cs_path}" "${witness_path}2"
+    echo "Check CVM witness"
+    snarkjs wtns check "${r1cs_path}" "${witness_path}"
+    echo "Check WASM witness"
+    snarkjs wtns check "${r1cs_path}" "${witness_path}2"
 
-  if ! cmp -s "${witness_path}" "${witness_path}2"; then
-    echo -e "${RED}Witnesses do not match${NC}"
-    exit 1
+    if ! cmp -s "${witness_path}" "${witness_path}2"; then
+      echo -e "${RED}Witnesses do not match${NC}"
+      exit 1
+    fi
   fi
 
   popd > /dev/null
@@ -222,7 +254,7 @@ if [ $# -gt 0 ]; then
       echo -e "${RED}Circuit file not found at $circuit_path${NC}"
       exit 1
     fi
-    test_circuit "${circuit_path}" "$custom_inputs_path" "$execution_mode"
+    test_circuit "${circuit_path}" "$custom_inputs_path" "$execution_mode" "$etalon_witness_path"
   done
 else
 	for circuit_path in "${script_dir}"/test_circuits/*.circom; do
@@ -233,6 +265,6 @@ else
 			continue
 		fi
 
-		test_circuit "${circuit_path}" "" "$execution_mode"
+		test_circuit "${circuit_path}" "" "$execution_mode" ""
 	done
 fi

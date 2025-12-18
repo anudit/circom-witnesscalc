@@ -12,54 +12,375 @@ pub fn init_signals<T: FieldOps, F>(
 where
         for <'a> &'a F: FieldOperations<Type = T> {
 
-    // Expand each InputInfo into all its constituent signal paths
-    let mut signal_path_to_idx: HashMap<String, usize> = HashMap::new();
-    for input_info in input_infos {
-        let expanded_paths = expand_input_info_to_signal_paths(input_info, types)?;
-        for (path, idx) in expanded_paths {
-            signal_path_to_idx.insert(path, idx);
-        }
-    }
+    let first_offset = input_infos.first()
+        .ok_or("no input infos provided")?
+        .offset;
+    let total_inputs = calculate_total_input_signals(input_infos, types);
+    let mut signals_set = vec![false; total_inputs];
 
     let input_signals = parse_signals_json(inputs_json, ff)?;
 
     for (path, value) in input_signals.iter() {
-        // Try to find exact match first
-        if let Some(&signal_idx) = signal_path_to_idx.get(path) {
-            signal_path_to_idx.remove(path);
-            component.set_signal(signal_idx-1, *value).map_err(|e| -> Box<dyn Error> {e})?;
-            continue;
-        }
+        let signal_idx = path_to_signal_idx(path, input_infos, types)
+            .ok_or_else(|| format!("signal {} is not found in input infos", path))?;
 
-        // Try converting flat array path to multi-dimensional path
-        if let Some(multidim_path) = try_convert_flat_to_multidim_path(path, input_infos) {
-            if let Some(&signal_idx) = signal_path_to_idx.get(&multidim_path) {
-                signal_path_to_idx.remove(&multidim_path);
-                component.set_signal(signal_idx-1, *value).map_err(|e| -> Box<dyn Error> {e})?;
-                continue;
-            }
+        let local_idx = signal_idx - first_offset;
+        if signals_set[local_idx] {
+            return Err(format!("duplicate signal at path {}", path).into());
         }
-
-        // Try parsing as array access with [0] suffix for backwards compatibility
-        if path.ends_with("[0]") {
-            let base_path = path.trim_end_matches("[0]");
-            if let Some(&signal_idx) = signal_path_to_idx.get(base_path) {
-                signal_path_to_idx.remove(base_path);
-                component.set_signal(signal_idx-1, *value).map_err(|e| -> Box<dyn Error> {e})?;
-                continue;
-            }
-        }
-
-        return Err(format!("signal {} is not found in input infos", path).into());
+        signals_set[local_idx] = true;
+        component.set_signal(signal_idx - 1, *value).map_err(|e| -> Box<dyn Error> { e })?;
     }
 
     // Check if any input signals were not provided
-    if !signal_path_to_idx.is_empty() {
-        let missing_signals: Vec<String> = signal_path_to_idx.keys().cloned().collect();
-        return Err(format!("Missing input signals: {}", missing_signals.join(", ")).into());
+    if let Some(missing_idx) = signals_set.iter().position(|&s| !s) {
+        return Err(format!("missing input signal at offset {}", first_offset + missing_idx).into());
     }
 
     Ok(())
+}
+
+/// Calculate total number of input signals
+fn calculate_total_input_signals(input_infos: &[InputInfo], types: &[Type]) -> usize {
+    input_infos.iter()
+        .map(|info| calculate_input_info_size(info, types))
+        .sum()
+}
+
+/// Calculate the size of a single InputInfo (number of signals it occupies)
+fn calculate_input_info_size(info: &InputInfo, types: &[Type]) -> usize {
+    let base_size = match &info.type_id {
+        Some(type_id) => {
+            let bus_type = types.iter().find(|t| &t.name == type_id).unwrap();
+            calculate_bus_total_size(bus_type, types)
+        }
+        None => 1,
+    };
+
+    if info.lengths.is_empty() {
+        base_size
+    } else {
+        base_size * info.lengths.iter().product::<usize>()
+    }
+}
+
+/// Convert a JSON path to signal index
+fn path_to_signal_idx(path: &str, input_infos: &[InputInfo], types: &[Type]) -> Option<usize> {
+    // Handle root array: "[5]" -> first_offset + 5
+    if path.starts_with('[') {
+        if let Some(idx) = parse_root_array_index(path) {
+            return Some(input_infos.first()?.offset + idx);
+        }
+    }
+
+    // Find which input this path belongs to
+    for info in input_infos {
+        if !path.starts_with(&info.name) {
+            continue;
+        }
+
+        let suffix = &path[info.name.len()..];
+
+        // Suffix must be empty, start with '[', or start with '.'
+        if !suffix.is_empty() && !suffix.starts_with('[') && !suffix.starts_with('.') {
+            continue;
+        }
+
+        if let Some(offset) = calculate_offset_from_suffix(suffix, info, types) {
+            return Some(info.offset + offset);
+        }
+    }
+
+    None
+}
+
+/// Parse root array index from path like "[5]" or "[12]"
+fn parse_root_array_index(path: &str) -> Option<usize> {
+    let path = path.strip_prefix('[')?;
+    let end = path.find(']')?;
+    // Ensure nothing follows the bracket (or it continues as nested array)
+    let after = &path[end + 1..];
+    if after.is_empty() {
+        path[..end].parse().ok()
+    } else {
+        None
+    }
+}
+
+/// Calculate offset within an input from the path suffix
+fn calculate_offset_from_suffix(suffix: &str, info: &InputInfo, types: &[Type]) -> Option<usize> {
+    if suffix.is_empty() {
+        // Single scalar or single bus with no array indexing
+        return if info.lengths.is_empty() && info.type_id.is_none() {
+            Some(0)
+        } else {
+            None // Need indices for arrays/buses
+        };
+    }
+
+    let bus_type = info.type_id.as_ref()
+        .and_then(|id| types.iter().find(|t| &t.name == id));
+
+    // Handle input array indexing first
+    if !info.lengths.is_empty() {
+        // Calculate total size of this input
+        let bus_size = bus_type.map(|b| calculate_bus_total_size(b, types)).unwrap_or(1);
+        let array_count: usize = info.lengths.iter().product();
+        let total_size = array_count * bus_size;
+
+        // Try as flat index first (simple "[N]" with no further access)
+        if let Some(flat_idx) = try_parse_flat_index(suffix, total_size) {
+            return Some(flat_idx);
+        }
+
+        let (array_offset, remaining) = parse_array_indices(suffix, &info.lengths)?;
+
+        if let Some(bus) = bus_type {
+            let inner_offset = calculate_bus_offset(remaining, bus, types)?;
+            Some(array_offset * bus_size + inner_offset)
+        } else {
+            // Plain array - remaining should be empty
+            if remaining.is_empty() {
+                Some(array_offset)
+            } else {
+                None
+            }
+        }
+    } else if let Some(bus) = bus_type {
+        // Single bus instance
+        calculate_bus_offset(suffix, bus, types)
+    } else {
+        // Single scalar - suffix should be empty or "[0]" for compat
+        if suffix == "[0]" {
+            Some(0)
+        } else {
+            None
+        }
+    }
+}
+
+/// Try to parse a flat index that spans the full input size
+/// Returns Some(idx) if suffix is "[N]" where N < total_size (simple flat index, no further access)
+fn try_parse_flat_index(suffix: &str, total_size: usize) -> Option<usize> {
+    if !suffix.starts_with('[') {
+        return None;
+    }
+    let close = suffix.find(']')?;
+    let after = &suffix[close + 1..];
+    if !after.is_empty() {
+        return None; // Not a simple flat index (has further access like ".field" or "[N]")
+    }
+    let idx: usize = suffix[1..close].parse().ok()?;
+
+    if idx < total_size {
+        Some(idx)
+    } else {
+        None
+    }
+}
+
+/// Parse array indices and return flat offset and remaining suffix
+/// Handles both multi-dimensional "[0][1][2]" and flat "[5]" indexing
+fn parse_array_indices<'a>(suffix: &'a str, dimensions: &[usize]) -> Option<(usize, &'a str)> {
+    if !suffix.starts_with('[') {
+        return None;
+    }
+
+    // Try parsing as multi-dimensional indices
+    let mut remaining = suffix;
+    let mut indices = Vec::new();
+
+    while remaining.starts_with('[') {
+        let close = remaining.find(']')?;
+        let idx: usize = remaining[1..close].parse().ok()?;
+        indices.push(idx);
+        remaining = &remaining[close + 1..];
+
+        if indices.len() == dimensions.len() {
+            break;
+        }
+    }
+
+    if indices.len() == dimensions.len() {
+        // Multi-dimensional indexing
+        let flat_idx = indices.iter()
+            .zip(dimensions.iter())
+            .fold(0, |acc, (&idx, &dim)| acc * dim + idx);
+        return Some((flat_idx, remaining));
+    }
+
+    // Try as flat index (single bracket with full array offset)
+    if indices.len() == 1 {
+        let total_size: usize = dimensions.iter().product();
+        if indices[0] < total_size {
+            // Reparse to get remaining after first bracket only
+            let close = suffix.find(']')?;
+            return Some((indices[0], &suffix[close + 1..]));
+        }
+    }
+
+    None
+}
+
+/// Calculate offset within a bus type from a path suffix
+fn calculate_bus_offset(suffix: &str, bus_type: &Type, types: &[Type]) -> Option<usize> {
+    if suffix.is_empty() {
+        return Some(0);
+    }
+
+    // Handle flat array indexing into bus: "[2]" -> find which field
+    if suffix.starts_with('[') {
+        let close = suffix.find(']')?;
+        let flat_idx: usize = suffix[1..close].parse().ok()?;
+        let remaining = &suffix[close + 1..];
+
+        return flat_idx_to_bus_offset(flat_idx, remaining, bus_type, types);
+    }
+
+    // Handle field access: ".fieldname..."
+    if let Some(field_part) = suffix.strip_prefix('.') {
+        let (field_name, rest) = split_field_name(field_part);
+
+        let mut offset = 0;
+        for field in &bus_type.fields {
+            if field.name == field_name {
+                let inner = calculate_field_offset(rest, field, types)?;
+                return Some(offset + inner);
+            }
+            offset += calculate_field_total_size(field, types);
+        }
+    }
+
+    None
+}
+
+/// Convert flat index within a bus to offset
+fn flat_idx_to_bus_offset(flat_idx: usize, remaining: &str, bus_type: &Type, types: &[Type]) -> Option<usize> {
+    let mut current_offset = 0;
+
+    for field in &bus_type.fields {
+        let field_size = calculate_field_total_size(field, types);
+
+        if flat_idx < current_offset + field_size {
+            let idx_within = flat_idx - current_offset;
+            let inner = calculate_field_offset_by_flat_idx(idx_within, remaining, field, types)?;
+            return Some(current_offset + inner);
+        }
+        current_offset += field_size;
+    }
+
+    None
+}
+
+/// Calculate offset within a field (handles arrays and nested buses)
+fn calculate_field_offset(suffix: &str, field: &crate::vm2::TypeField, types: &[Type]) -> Option<usize> {
+    match &field.kind {
+        TypeFieldKind::Ff => {
+            if field.dims.is_empty() {
+                // Scalar - suffix should be empty or "[0]"
+                if suffix.is_empty() || suffix == "[0]" {
+                    Some(0)
+                } else {
+                    None
+                }
+            } else {
+                // Array of scalars
+                let (array_offset, remaining) = parse_array_indices(suffix, &field.dims)?;
+                if remaining.is_empty() {
+                    Some(array_offset)
+                } else {
+                    None
+                }
+            }
+        }
+        TypeFieldKind::Bus(bus_idx) => {
+            let nested_bus = types.get(*bus_idx)?;
+            let bus_size = calculate_bus_total_size(nested_bus, types);
+
+            if field.dims.is_empty() {
+                // Single nested bus
+                calculate_bus_offset(suffix, nested_bus, types)
+            } else {
+                // Array of buses
+                let (array_offset, remaining) = parse_array_indices(suffix, &field.dims)?;
+                let inner = calculate_bus_offset(remaining, nested_bus, types)?;
+                Some(array_offset * bus_size + inner)
+            }
+        }
+    }
+}
+
+/// Calculate offset within a field using flat index
+fn calculate_field_offset_by_flat_idx(
+    flat_idx: usize,
+    remaining: &str,
+    field: &crate::vm2::TypeField,
+    types: &[Type]
+) -> Option<usize> {
+    match &field.kind {
+        TypeFieldKind::Ff => {
+            if remaining.is_empty() {
+                Some(flat_idx)
+            } else {
+                None
+            }
+        }
+        TypeFieldKind::Bus(bus_idx) => {
+            let nested_bus = types.get(*bus_idx)?;
+            let bus_size = calculate_bus_total_size(nested_bus, types);
+
+            if field.dims.is_empty() {
+                // Single nested bus - recurse into it
+                flat_idx_to_bus_offset(flat_idx, remaining, nested_bus, types)
+            } else {
+                // Array of buses
+                let array_idx = flat_idx / bus_size;
+                let idx_within_bus = flat_idx % bus_size;
+                let inner = flat_idx_to_bus_offset(idx_within_bus, remaining, nested_bus, types)?;
+                Some(array_idx * bus_size + inner)
+            }
+        }
+    }
+}
+
+/// Split field name from rest of path
+fn split_field_name(s: &str) -> (&str, &str) {
+    let bracket_pos = s.find('[');
+    let dot_pos = s.find('.');
+
+    match (bracket_pos, dot_pos) {
+        (Some(b), Some(d)) => {
+            let pos = b.min(d);
+            (&s[..pos], &s[pos..])
+        }
+        (Some(b), None) => (&s[..b], &s[b..]),
+        (None, Some(d)) => (&s[..d], &s[d..]),
+        (None, None) => (s, ""),
+    }
+}
+
+/// Calculate the total size of a field including array dimensions
+fn calculate_field_total_size(field: &crate::vm2::TypeField, types: &[Type]) -> usize {
+    let base_size = match &field.kind {
+        TypeFieldKind::Ff => 1,
+        TypeFieldKind::Bus(bus_idx) => {
+            let bus_type = &types[*bus_idx];
+            calculate_bus_total_size(bus_type, types)
+        }
+    };
+
+    if field.dims.is_empty() {
+        base_size
+    } else {
+        base_size * field.dims.iter().product::<usize>()
+    }
+}
+
+/// Calculate the total size of a bus type
+fn calculate_bus_total_size(bus_type: &Type, types: &[Type]) -> usize {
+    bus_type.fields.iter()
+        .map(|f| calculate_field_total_size(f, types))
+        .sum()
 }
 
 /// Build the component tree for VM2 execution
@@ -98,154 +419,6 @@ fn create_component<T: FieldOps>(
             t.signals_num),
         next_signal_start - signals_start
     )
-}
-
-/// Expand an InputInfo into all its constituent signal paths with their indices
-fn expand_input_info_to_signal_paths(
-    input_info: &InputInfo,
-    types: &[Type]
-) -> Result<Vec<(String, usize)>, Box<dyn std::error::Error>> {
-    let mut paths = Vec::new();
-    let mut current_offset = input_info.offset;
-
-    if let Some(type_id) = &input_info.type_id {
-        // This is a bus type - expand it recursively
-        let bus_type = types.iter().find(|t| t.name == *type_id)
-            .ok_or_else(|| <&str as Into<Box<dyn std::error::Error>>>::into("bus type not found"))?;
-
-        if input_info.lengths.is_empty() {
-            // Single bus instance
-            expand_bus_type(&input_info.name, bus_type, types, &mut current_offset, &mut paths)?;
-        } else {
-            // Array of bus instances
-            let total_elements: usize = input_info.lengths.iter().product();
-            for i in 0..total_elements {
-                let array_path = format!("{}[{}]", input_info.name, i);
-                expand_bus_type(&array_path, bus_type, types, &mut current_offset, &mut paths)?;
-            }
-        }
-    } else {
-        // This is a field (ff) type
-        if input_info.lengths.is_empty() {
-            // Single field
-            paths.push((input_info.name.clone(), current_offset));
-        } else {
-            // Array of fields - generate multi-dimensional paths
-            let total_elements: usize = input_info.lengths.iter().product();
-            for i in 0..total_elements {
-                let multi_indices = flat_to_multidim_indices(i, &input_info.lengths);
-                let mut array_path = input_info.name.clone();
-                for idx in multi_indices {
-                    array_path.push_str(&format!("[{}]", idx));
-                }
-                paths.push((array_path, current_offset));
-                current_offset += 1;
-            }
-        }
-    }
-
-    Ok(paths)
-}
-
-/// Convert flat array index to multi-dimensional indices
-fn flat_to_multidim_indices(flat_idx: usize, dimensions: &[usize]) -> Vec<usize> {
-    let mut indices = Vec::new();
-    let mut remaining = flat_idx;
-
-    for &dim in dimensions.iter().rev() {
-        indices.push(remaining % dim);
-        remaining /= dim;
-    }
-
-    indices.reverse();
-    indices
-}
-
-/// Recursively expand a bus type into individual field paths
-fn expand_bus_type(
-    base_path: &str,
-    bus_type: &Type,
-    types: &[Type],
-    current_offset: &mut usize,
-    paths: &mut Vec<(String, usize)>
-) -> Result<(), Box<dyn std::error::Error>> {
-    for field in &bus_type.fields {
-        let field_path = format!("{}.{}", base_path, field.name);
-
-        match &field.kind {
-            TypeFieldKind::Bus(bus_type_index) => {
-                let field_type = types.get(*bus_type_index)
-                    .ok_or_else(|| <String as Into<Box<dyn std::error::Error>>>::into(
-                        format!(
-                            "bus type not found: bus type index {}",
-                            bus_type_index)))?;
-
-                if field.dims.is_empty() {
-                    // Single bus instance
-                    expand_bus_type(&field_path, field_type, types, current_offset, paths)?;
-                } else {
-                    // Array of bus instances
-                    let total_elements: usize = field.dims.iter().product();
-                    for i in 0..total_elements {
-                        let array_path = format!("{}[{}]", field_path, i);
-                        expand_bus_type(&array_path, field_type, types, current_offset, paths)?;
-                    }
-                }
-            },
-            TypeFieldKind::Ff => {
-                // This field is a primitive type (ff)
-                if field.dims.is_empty() {
-                    // Single field
-                    paths.push((field_path, *current_offset));
-                    *current_offset += 1;
-                } else {
-                    // Array of fields
-                    let total_elements: usize = field.dims.iter().product();
-                    for i in 0..total_elements {
-                        let array_path = format!("{}[{}]", field_path, i);
-                        paths.push((array_path, *current_offset));
-                        *current_offset += 1;
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Check if a path represents a flat array access and convert to multi-dimensional path
-fn try_convert_flat_to_multidim_path(
-    path: &str,
-    input_infos: &[InputInfo]
-) -> Option<String> {
-    // Extract base name and flat index from path like "b[4]"
-    if let Some(bracket_start) = path.find('[') {
-        let base_name = &path[..bracket_start];
-        let bracket_part = &path[bracket_start..];
-
-        // Parse flat index from "[4]"
-        if let Some(flat_idx_str) = bracket_part.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
-            if let Ok(flat_idx) = flat_idx_str.parse::<usize>() {
-                // Find matching input info
-                for input_info in input_infos {
-                    if input_info.name == base_name && input_info.lengths.len() > 1 {
-                        // Convert flat index to multi-dimensional indices
-                        let multi_indices = flat_to_multidim_indices(flat_idx, &input_info.lengths);
-
-                        // Build multi-dimensional path
-                        let mut result = base_name.to_string();
-                        for idx in multi_indices {
-                            result.push_str(&format!("[{}]", idx));
-                        }
-                        return Some(result);
-                    }
-                }
-            }
-        }
-    }
-
-    None
 }
 
 fn parse_signals_json<T: FieldOps, F>(
@@ -300,11 +473,12 @@ where
             records.insert(prefix.to_string(), ff.parse_str(s)?);
         },
         serde_json::Value::Array(vs) => {
-            if prefix.is_empty() {
-                return Err("array value cannot be at the root".into());
-            }
             for (i, v) in vs.iter().enumerate() {
-                let new_prefix = format!("{}[{}]", prefix, i);
+                let new_prefix = if prefix.is_empty() {
+                    format!("[{}]", i)
+                } else {
+                    format!("{}[{}]", prefix, i)
+                };
                 visit_inputs_json(&new_prefix, v, records, ff)?;
             }
         },
@@ -744,4 +918,81 @@ mod tests {
         want.insert("v.v[1].end.y".to_string(), U254::from_str("11").unwrap());
         assert_eq!(want, result);
     }
+
+    #[test]
+    fn test_path_to_signal_idx() {
+        use crate::vm2::{Type, TypeField, TypeFieldKind};
+
+        // bus_0: { x: Ff[2], y: Ff } → size 3
+        // bus_1: { start: Bus(0)[2], end: Bus(0) } → size 9
+        let types = vec![
+            Type {
+                name: "bus_0".to_string(),
+                fields: vec![
+                    TypeField { name: "x".to_string(), kind: TypeFieldKind::Ff, offset: 0, size: 1, dims: vec![2] },
+                    TypeField { name: "y".to_string(), kind: TypeFieldKind::Ff, offset: 2, size: 1, dims: vec![] },
+                ],
+            },
+            Type {
+                name: "bus_1".to_string(),
+                fields: vec![
+                    TypeField { name: "start".to_string(), kind: TypeFieldKind::Bus(0), offset: 0, size: 3, dims: vec![2] },
+                    TypeField { name: "end".to_string(), kind: TypeFieldKind::Bus(0), offset: 6, size: 3, dims: vec![] },
+                ],
+            },
+        ];
+
+        let input_infos = vec![
+            InputInfo { name: "a".to_string(), offset: 7, lengths: vec![2, 3], type_id: None },
+            InputInfo { name: "b".to_string(), offset: 13, lengths: vec![3, 2], type_id: None },
+            InputInfo { name: "c".to_string(), offset: 19, lengths: vec![], type_id: Some("bus_1".to_string()) },
+            InputInfo { name: "d".to_string(), offset: 28, lengths: vec![2], type_id: Some("bus_1".to_string()) },
+        ];
+
+        // Test "a": Ff[2][3] at offset 7
+        assert_eq!(path_to_signal_idx("a[0][0]", &input_infos, &types), Some(7));
+        assert_eq!(path_to_signal_idx("a[0][1]", &input_infos, &types), Some(8));
+        assert_eq!(path_to_signal_idx("a[0][2]", &input_infos, &types), Some(9));
+        assert_eq!(path_to_signal_idx("a[1][0]", &input_infos, &types), Some(10));
+        assert_eq!(path_to_signal_idx("a[1][1]", &input_infos, &types), Some(11));
+        assert_eq!(path_to_signal_idx("a[1][2]", &input_infos, &types), Some(12));
+        // Also test flat indexing
+        assert_eq!(path_to_signal_idx("a[0]", &input_infos, &types), Some(7));
+        assert_eq!(path_to_signal_idx("a[5]", &input_infos, &types), Some(12));
+
+        // Test "b": Ff[3][2] at offset 13
+        assert_eq!(path_to_signal_idx("b[0][0]", &input_infos, &types), Some(13));
+        assert_eq!(path_to_signal_idx("b[0][1]", &input_infos, &types), Some(14));
+        assert_eq!(path_to_signal_idx("b[1][0]", &input_infos, &types), Some(15));
+        assert_eq!(path_to_signal_idx("b[2][1]", &input_infos, &types), Some(18));
+
+        // Test "c": bus_1 at offset 19
+        assert_eq!(path_to_signal_idx("c.start[0].x[0]", &input_infos, &types), Some(19));
+        assert_eq!(path_to_signal_idx("c.start[0].x[1]", &input_infos, &types), Some(20));
+        assert_eq!(path_to_signal_idx("c.start[0].y", &input_infos, &types), Some(21));
+        assert_eq!(path_to_signal_idx("c.start[1].x[0]", &input_infos, &types), Some(22));
+        assert_eq!(path_to_signal_idx("c.end.x[0]", &input_infos, &types), Some(25));
+        assert_eq!(path_to_signal_idx("c.end.y", &input_infos, &types), Some(27));
+        // Test flat indexing into bus
+        assert_eq!(path_to_signal_idx("c[0]", &input_infos, &types), Some(19));
+        assert_eq!(path_to_signal_idx("c[2]", &input_infos, &types), Some(21));
+        assert_eq!(path_to_signal_idx("c[8]", &input_infos, &types), Some(27));
+
+        // Test "d": bus_1[2] at offset 28
+        assert_eq!(path_to_signal_idx("d[0].start[0].x[0]", &input_infos, &types), Some(28));
+        assert_eq!(path_to_signal_idx("d[0].end.y", &input_infos, &types), Some(36));
+        assert_eq!(path_to_signal_idx("d[1].start[0].x[0]", &input_infos, &types), Some(37));
+        assert_eq!(path_to_signal_idx("d[1].end.y", &input_infos, &types), Some(45));
+        // Test flat indexing
+        assert_eq!(path_to_signal_idx("d[0][0]", &input_infos, &types), Some(28));
+        assert_eq!(path_to_signal_idx("d[0][8]", &input_infos, &types), Some(36));
+        assert_eq!(path_to_signal_idx("d[1][0]", &input_infos, &types), Some(37));
+
+        // Test root array indexing
+        assert_eq!(path_to_signal_idx("[0]", &input_infos, &types), Some(7));
+        assert_eq!(path_to_signal_idx("[12]", &input_infos, &types), Some(19));
+        assert_eq!(path_to_signal_idx("[38]", &input_infos, &types), Some(45));
+    }
+
+    include!("vm2_setup_tests.rs");
 }

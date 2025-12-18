@@ -194,7 +194,7 @@ fn build_input_info(
     
     let mut input_infos = Vec::new();
     let mut current_offset = outputs_count + 1; // signal #0 is always 1
-    
+
     // Process each input from the AST
     for input in inputs {
         let lengths = match &input.signal {
@@ -248,8 +248,9 @@ fn calculate_bus_size(bus_type: &ast::Type, _all_types: &[ast::Type]) -> usize {
     let mut total_size = 0;
 
     for field in &bus_type.fields {
-        // The size field already contains the total size for this field
-        total_size += field.size;
+        let dim_product: usize = field.dims.iter().product();
+        let field_total = if dim_product == 0 { field.size } else { field.size * dim_product };
+        total_size += field_total;
     }
 
     total_size
@@ -1437,8 +1438,8 @@ mod tests {
     }
 
     fn capture_disassembly(
-        name: &str, code: &[u8], ff_variable_names: &Vec<String>,
-        i64_variable_names: &Vec<String>) -> String {
+        name: &str, code: &[u8], ff_variable_names: &[String],
+        i64_variable_names: &[String]) -> String {
 
         let mut actual_output = String::new();
         let mut ip: usize = 0;
@@ -1674,5 +1675,31 @@ x_11 = get_signal i64.16
         ];
 
         assert_eq!(input_infos, expected);
+    }
+
+    #[test]
+    fn test_calculate_bus_size() {
+        let tp = ast::Type {
+            name: "bus_0".to_string(),
+            fields: vec![
+                ast::TypeField{
+                    name: "x".to_string(),
+                    kind: ast::TypeFieldKind::Ff,
+                    offset: 0,
+                    size: 1,
+                    dims: vec![2],
+                },
+                ast::TypeField{
+                    name: "y".to_string(),
+                    kind: ast::TypeFieldKind::Ff,
+                    offset: 2,
+                    size: 1,
+                    dims: vec![],
+                },
+            ],
+        };
+        let types = vec![tp];
+        let res = calculate_bus_size(&types[0], &types);
+        assert_eq!(res, 3); // x[2] (2 elements) + y (1 element) = 3
     }
 }

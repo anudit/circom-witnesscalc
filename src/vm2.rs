@@ -439,6 +439,17 @@ fn calculate_signal_size(signal: &Signal, types: &[Type]) -> usize {
     }
 }
 
+fn calculate_signal_base_size(signal: &Signal, types: &[Type]) -> usize {
+    match signal {
+        Signal::Ff(..) => 1,
+        Signal::Bus(type_idx, ..) => {
+            let bus_type = &types[*type_idx];
+            let base_size: usize = bus_type.fields.iter().map(|f| f.size).sum();
+            base_size
+        }
+    }
+}
+
 fn calculate_signal_offset(signals: &[Signal], signal_id: usize, types: &[Type]) -> usize {
     signals.iter().take(signal_id)
         .map(|sig| calculate_signal_size(sig, types))
@@ -2429,9 +2440,9 @@ where
                 }
                 
                 let size = if signal_id < num_outputs {
-                    calculate_signal_size(&template.outputs[signal_id], &circuit.types)
+                    calculate_signal_base_size(&template.outputs[signal_id], &circuit.types)
                 } else {
-                    calculate_signal_size(&template.inputs[signal_id - num_outputs], &circuit.types)
+                    calculate_signal_base_size(&template.inputs[signal_id - num_outputs], &circuit.types)
                 };
                 
                 vm.push_i64(size as i64);

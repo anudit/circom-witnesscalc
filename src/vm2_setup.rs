@@ -12,13 +12,19 @@ pub fn init_signals<T: FieldOps, F>(
 where
         for <'a> &'a F: FieldOperations<Type = T> {
 
-    let first_offset = input_infos.first()
-        .ok_or("no input infos provided")?
-        .offset;
+    let input_signals = parse_signals_json(inputs_json, ff)?;
+
+    if input_infos.is_empty() {
+        return if input_signals.is_empty() {
+            Ok(())
+        } else {
+            Err("input JSON contains signals but circuit has no inputs".into())
+        };
+    }
+
+    let first_offset = input_infos.first().unwrap().offset;
     let total_inputs = calculate_total_input_signals(input_infos, types);
     let mut signals_set = vec![false; total_inputs];
-
-    let input_signals = parse_signals_json(inputs_json, ff)?;
 
     for (path, value) in input_signals.iter() {
         let signal_idx = path_to_signal_idx(path, input_infos, types)

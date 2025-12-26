@@ -974,28 +974,28 @@ fn parse_i64_expression(input: &mut &str) -> ModalResult<I64Expr> {
                 )
                 .map(|(template_id, signal_id, dimension_index)| 
                     I64Expr::GetTemplateSignalDimension(template_id, signal_id, dimension_index)),
-            "get_bus_signal_position" => (
+            "get_bus_field_position" => (
                     preceded(space1, parse_i64_operand),
                     preceded(space1, parse_i64_operand),
                 )
-                .map(|(bus_id, signal_id)| I64Expr::GetBusSignalPosition(bus_id, signal_id)),
-            "get_bus_signal_size" => (
+                .map(|(bus_id, signal_id)| I64Expr::GetBusFieldPosition(bus_id, signal_id)),
+            "get_bus_field_size" => (
                     preceded(space1, parse_i64_operand),
                     preceded(space1, parse_i64_operand),
                 )
-                .map(|(bus_id, signal_id)| I64Expr::GetBusSignalSize(bus_id, signal_id)),
-            "get_bus_signal_type" => (
+                .map(|(bus_id, signal_id)| I64Expr::GetBusFieldSize(bus_id, signal_id)),
+            "get_bus_field_type" => (
                     preceded(space1, parse_i64_operand),
                     preceded(space1, parse_i64_operand),
                 )
-                .map(|(bus_id, signal_id)| I64Expr::GetBusSignalType(bus_id, signal_id)),
-            "get_bus_signal_dimension" => (
+                .map(|(bus_id, signal_id)| I64Expr::GetBusFieldType(bus_id, signal_id)),
+            "get_bus_field_dimension" => (
                     preceded(space1, parse_i64_operand),
                     preceded(space1, parse_i64_operand),
                     preceded(space1, parse_i64_operand),
                 )
                 .map(|(bus_id, signal_id, dimension_index)| 
-                    I64Expr::GetBusSignalDimension(bus_id, signal_id, dimension_index)),
+                    I64Expr::GetBusFieldDimension(bus_id, signal_id, dimension_index)),
             _ => fail::<_, I64Expr, _>,
         },
         // Try to parse as a literal

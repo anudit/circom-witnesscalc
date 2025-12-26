@@ -457,10 +457,10 @@ pub enum I64Expr {
     GetTemplateSignalSize(I64Operand, I64Operand), // template_id, signal_id
     GetTemplateSignalType(I64Operand, I64Operand), // template_id, input/output signal_id
     GetTemplateSignalDimension(I64Operand, I64Operand, I64Operand), // template_id, signal_id, dimension_index
-    GetBusSignalPosition(I64Operand, I64Operand), // template_id, signal_id
-    GetBusSignalSize(I64Operand, I64Operand), // template_id, signal_id
-    GetBusSignalType(I64Operand, I64Operand), // template_id, signal_id
-    GetBusSignalDimension(I64Operand, I64Operand, I64Operand), // template_id, signal_id, dimension_index
+    GetBusFieldPosition(I64Operand, I64Operand), // template_id, signal_id
+    GetBusFieldSize(I64Operand, I64Operand), // template_id, signal_id
+    GetBusFieldType(I64Operand, I64Operand), // template_id, signal_id
+    GetBusFieldDimension(I64Operand, I64Operand, I64Operand), // template_id, signal_id, dimension_index
 }
 
 #[cfg_attr(test, derive(PartialEq, Debug))]

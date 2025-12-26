@@ -549,26 +549,26 @@ where
             operand_i64(ctx, template_id);
             ctx.code.push(OpCode::GetTemplateSignalDimension as u8);
         }
-        I64Expr::GetBusSignalPosition(template_id, signal_id) => {
+        I64Expr::GetBusFieldPosition(template_id, signal_id) => {
             operand_i64(ctx, signal_id);
             operand_i64(ctx, template_id);
-            ctx.code.push(OpCode::GetBusSignalPosition as u8);
+            ctx.code.push(OpCode::GetBusFieldPosition as u8);
         }
-        I64Expr::GetBusSignalSize(template_id, signal_id) => {
+        I64Expr::GetBusFieldSize(template_id, signal_id) => {
             operand_i64(ctx, signal_id);
             operand_i64(ctx, template_id);
-            ctx.code.push(OpCode::GetBusSignalSize as u8);
+            ctx.code.push(OpCode::GetBusFieldSize as u8);
         }
-        I64Expr::GetBusSignalType(template_id, signal_id) => {
+        I64Expr::GetBusFieldType(template_id, signal_id) => {
             operand_i64(ctx, signal_id);
             operand_i64(ctx, template_id);
-            ctx.code.push(OpCode::GetBusSignalType as u8);
+            ctx.code.push(OpCode::GetBusFieldType as u8);
         }
-        I64Expr::GetBusSignalDimension(template_id, signal_id, dimension_index) => {
+        I64Expr::GetBusFieldDimension(template_id, signal_id, dimension_index) => {
             operand_i64(ctx, signal_id);
             operand_i64(ctx, template_id);
             operand_i64(ctx, dimension_index);
-            ctx.code.push(OpCode::GetBusSignalDimension as u8);
+            ctx.code.push(OpCode::GetBusFieldDimension as u8);
         }
     }
     Ok(())

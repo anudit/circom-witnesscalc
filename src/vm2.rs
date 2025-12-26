@@ -274,12 +274,12 @@ pub enum OpCode {
     //   -2: number of signals to copy
     CopySignalFromMemory = 58,
     CopyCmpInputsFromMemory = 62,
-    GetBusSignalPosition = 64,
-    GetBusSignalSize = 65,
+    GetBusFieldPosition = 64,
+    GetBusFieldSize = 65,
     OpI64Eq = 66,
     FfMStoreFromCmpSignal = 67,
-    GetBusSignalType = 68,
-    GetBusSignalDimension = 69,
+    GetBusFieldType = 68,
+    GetBusFieldDimension = 69,
     OpI64Gt = 71,
     OpI64Gte = 72,
     OpI64Eqz = 73,
@@ -1435,17 +1435,17 @@ where
         OpCode::CopyCmpInputsFromMemory => {
             output.push_str("CopyCmpInputsFromMemory");
         }
-        OpCode::GetBusSignalPosition => {
-            output.push_str("GetBusSignalPosition");
+        OpCode::GetBusFieldPosition => {
+            output.push_str("GetBusFieldPosition");
         }
-        OpCode::GetBusSignalSize => {
-            output.push_str("GetBusSignalSize");
+        OpCode::GetBusFieldSize => {
+            output.push_str("GetBusFieldSize");
         }
-        OpCode::GetBusSignalType => {
-            output.push_str("GetBusSignalType");
+        OpCode::GetBusFieldType => {
+            output.push_str("GetBusFieldType");
         }
-        OpCode::GetBusSignalDimension => {
-            output.push_str("GetBusSignalDimension");
+        OpCode::GetBusFieldDimension => {
+            output.push_str("GetBusFieldDimension");
         }
     }
 
@@ -2523,7 +2523,7 @@ where
                 
                 vm.push_i64(dims[dimension_index] as i64);
             }
-            OpCode::GetBusSignalPosition => {
+            OpCode::GetBusFieldPosition => {
                 let bus_type_id = vm.pop_usize()?;
                 let field_id = vm.pop_usize()?;
 
@@ -2546,12 +2546,12 @@ where
                 #[cfg(feature = "debug_vm2")]
                 {
                     println!(
-                        "GetBusSignalPosition: bus_type {} field {} => offset {}",
+                        "GetBusFieldPosition: bus_type {} field {} => offset {}",
                         bus_type_id, field_id, position
                     );
                 }
             }
-            OpCode::GetBusSignalSize => {
+            OpCode::GetBusFieldSize => {
                 let bus_type_id = vm.pop_usize()?;
                 let field_id = vm.pop_usize()?;
 
@@ -2574,12 +2574,12 @@ where
                 #[cfg(feature = "debug_vm2")]
                 {
                     println!(
-                        "GetBusSignalSize: bus_type {} field {} => size {}",
+                        "GetBusFieldSize: bus_type {} field {} => size {}",
                         bus_type_id, field_id, size
                     );
                 }
             }
-            OpCode::GetBusSignalType => {
+            OpCode::GetBusFieldType => {
                 let bus_type_id = vm.pop_usize()?;
                 let field_id = vm.pop_usize()?;
 
@@ -2614,12 +2614,12 @@ where
                 #[cfg(feature = "debug_vm2")]
                 {
                     println!(
-                        "GetBusSignalType: bus_type {} field {} => type {}",
+                        "GetBusFieldType: bus_type {} field {} => type {}",
                         bus_type_id, field_id, type_id
                     );
                 }
             }
-            OpCode::GetBusSignalDimension => {
+            OpCode::GetBusFieldDimension => {
                 let dimension_idx = vm.pop_usize()?;
                 let field_id = vm.pop_usize()?;
                 let bus_type_id = vm.pop_usize()?;
@@ -2652,7 +2652,7 @@ where
 
                 #[cfg(feature = "debug_vm2")]
                 println!(
-                    "GetBusSignalDimension: bus_type={} field={} dim[{}]={}",
+                    "GetBusFieldDimension: bus_type={} field={} dim[{}]={}",
                     bus_type_id, field_id, dimension_idx, dim_length
                 );
             }
@@ -2686,10 +2686,10 @@ where
                                 .signals_start
                                 + cmp_sig_idx + offset;
                         println!(
-                            "CopyCmpInputsFromSelf [S{} -> S{}]: cmp {} sig {} = {} / {}",
+                            "CopyCmpInputsFromSelf [S{} -> S{}]: cmp {} sig {} = {}",
                             component_tree.signals_start + self_sig_idx + offset,
                             dst_idx, cmp_idx,
-                            cmp_sig_idx + offset, value, value);
+                            cmp_sig_idx + offset, value);
                     }
                 }
 

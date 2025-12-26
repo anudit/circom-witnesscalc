@@ -292,3 +292,21 @@ fn test_init_signals_flat_bus_arrays() {
         );
     }
 }
+
+// cargo run --package circom-witnesscalc --bin cvm-compile ./tests/data/circuit25_heterogeneous_buses_simple2_cvm/circuit25_heterogeneous_buses_simple2.cvm -o ./tests/data/circuit25_heterogeneous_buses_simple2.wcd
+#[test]
+fn test_heterogeneous_bus(){
+    let wcd = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/data/circuit25_heterogeneous_buses_simple2.wcd");
+    let wcd_data = std::fs::read(wcd).unwrap();
+    let mut wcd_reader = std::io::Cursor::new(wcd_data.as_slice());
+    let prime = read_witnesscalc_vm2_header(&mut wcd_reader).unwrap();
+    let want_prime = BigUint::from_bytes_le(&FieldOps::to_le_bytes(&bn254_prime));
+    assert_eq!(want_prime, prime);
+    let ff = Field::new(bn254_prime);
+    let circuit = deserialize_witnesscalc_vm2_body(&mut wcd_reader, ff.clone()).unwrap();
+    let component_tree: Component<U254> = build_component_tree(
+        circuit.main_template_id, &circuit.templates);
+    assert_eq!(8,
+        component_tree.components[0].as_ref().unwrap().read().unwrap().number_of_inputs);
+}

@@ -238,22 +238,10 @@ fn calculate_signal_size(signal: &ast::Signal, types: &[ast::Type]) -> Result<us
         ast::Signal::Bus(bus_type, dims) => {
             let type_def = types.iter().find(|t| t.name == *bus_type)
                 .ok_or_else(|| Box::new(CompilationError::BusTypeNotFound(bus_type.clone())))?;
-            let base_size = calculate_bus_size(type_def, types);
+            let base_size = type_def.get_total_size();
             Ok(if dims.is_empty() { base_size } else { base_size * dims.iter().product::<usize>() })
         }
     }
-}
-
-fn calculate_bus_size(bus_type: &ast::Type, _all_types: &[ast::Type]) -> usize {
-    let mut total_size = 0;
-
-    for field in &bus_type.fields {
-        let dim_product: usize = field.dims.iter().product();
-        let field_total = if dim_product == 0 { field.size } else { field.size * dim_product };
-        total_size += field_total;
-    }
-
-    total_size
 }
 
 #[cfg(feature = "debug_vm2")]
@@ -1686,20 +1674,19 @@ x_11 = get_signal i64.16
                     name: "x".to_string(),
                     kind: ast::TypeFieldKind::Ff,
                     offset: 0,
-                    size: 1,
+                    base_type_size: 1,
                     dims: vec![2],
                 },
                 ast::TypeField{
                     name: "y".to_string(),
                     kind: ast::TypeFieldKind::Ff,
                     offset: 2,
-                    size: 1,
+                    base_type_size: 1,
                     dims: vec![],
                 },
             ],
         };
-        let types = vec![tp];
-        let res = calculate_bus_size(&types[0], &types);
+        let res = tp.get_total_size();
         assert_eq!(res, 3); // x[2] (2 elements) + y (1 element) = 3
     }
 }

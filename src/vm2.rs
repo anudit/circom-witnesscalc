@@ -3106,7 +3106,7 @@ impl TypeField {
                 },
             },
             offset: ast_field.offset,
-            size: ast_field.size,
+            size: ast_field.base_type_size,
             dims: ast_field.dims.clone(),
         }
     }

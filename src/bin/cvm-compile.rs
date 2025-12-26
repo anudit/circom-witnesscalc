@@ -1132,7 +1132,7 @@ where
         Statement::Assignment { name, value } => {
             compile_assignment(ctx, ff, name, value)?;
         }
-        Statement::CopyCmpInputFromSelf { cmp_idx, cmp_sig_idx, self_sig_idx, size, mode } => {
+        Statement::CopyCmpInputsFromSelf { cmp_idx, cmp_sig_idx, self_sig_idx, size, mode } => {
             operand_i64(ctx, size);
             operand_i64(ctx, self_sig_idx);
             operand_i64(ctx, cmp_sig_idx);

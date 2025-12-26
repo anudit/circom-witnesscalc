@@ -433,8 +433,8 @@ fn calculate_signal_size(signal: &Signal, types: &[Type]) -> usize {
         }
         Signal::Bus(type_idx, dims) => {
             let bus_type = &types[*type_idx];
-            let base_size: usize = bus_type.fields.iter().map(|f| f.size).sum();
-            if dims.is_empty() { base_size } else { base_size * dims.iter().product::<usize>() }
+            let bus_size = bus_type.get_total_size();
+            if dims.is_empty() { bus_size } else { bus_size * dims.iter().product::<usize>() }
         }
     }
 }
@@ -444,7 +444,7 @@ fn calculate_signal_base_size(signal: &Signal, types: &[Type]) -> usize {
         Signal::Ff(..) => 1,
         Signal::Bus(type_idx, ..) => {
             let bus_type = &types[*type_idx];
-            let base_size: usize = bus_type.fields.iter().map(|f| f.size).sum();
+            let base_size: usize = bus_type.get_total_size();
             base_size
         }
     }
@@ -1786,6 +1786,16 @@ where
                     }
                     Some(ref mut c) => {
                         let mut run = false;
+                        #[cfg(feature = "debug_vm2")]
+                        {
+                            let c = c.read().unwrap();
+                            println!(
+                                "StoreCmpSignalCntCheck [S{}]: cmp {} ({}) sig {} = {}, inputs left: {}",
+                                c.signals_start+sig_idx, cmp_idx,
+                                circuit.templates[c.template_id].name, sig_idx,
+                                value, c.number_of_inputs-1);
+                        }
+
                         {
                             let mut c = c.write().unwrap();
                             c.set_signal(sig_idx, value)?;
@@ -1793,14 +1803,6 @@ where
                             if c.number_of_inputs == 0 {
                                 run = true;
                             }
-                        }
-                        #[cfg(feature = "debug_vm2")]
-                        {
-                            let c = c.read().unwrap();
-                            println!(
-                                "StoreCmpSignalCntCheck [S{}]: {}[{}/{}] = {}, inputs left: {}, template: {}",
-                                c.signals_start + sig_idx, cmp_idx, c.signals_start, sig_idx, value,
-                                c.number_of_inputs, circuit.templates[c.template_id].name);
                         }
                         if run {
                             #[cfg(feature = "debug_vm2")]
@@ -1832,18 +1834,20 @@ where
                             Box::new(RuntimeError::UninitializedComponent))
                     }
                     Some(ref mut c) => {
-                        {
-                            let mut c = c.write().unwrap();
-                            c.set_signal(sig_idx, value)?;
-                            c.number_of_inputs -= 1;
-                        }
                         #[cfg(feature = "debug_vm2")]
                         {
                             let c = c.read().unwrap();
                             println!(
-                                "StoreCmpInputCnt [S{}]: {}[{}/{}] = {}, inputs left: {}, template: {}",
-                                c.signals_start + sig_idx, cmp_idx, c.signals_start, sig_idx, value,
-                                c.number_of_inputs, circuit.templates[c.template_id].name);
+                                "StoreCmpInputCnt [S{}]: cmp {} ({}) sig {} = {}, inputs left: {}",
+                                c.signals_start+sig_idx, cmp_idx,
+                                circuit.templates[c.template_id].name, sig_idx,
+                                value, c.number_of_inputs-1);
+                        }
+
+                        {
+                            let mut c = c.write().unwrap();
+                            c.set_signal(sig_idx, value)?;
+                            c.number_of_inputs -= 1;
                         }
                         // Skip the check for c.number_of_inputs == 0 and component execution
                     }
@@ -2568,7 +2572,7 @@ where
                     )));
                 }
 
-                let size = bus_type.fields[field_id].size;
+                let size = bus_type.fields[field_id].base_type_size;
                 vm.push_i64(size as i64);
 
                 #[cfg(feature = "debug_vm2")]
@@ -2670,27 +2674,27 @@ where
 
                 for offset in 0..num_signals {
                     let value = component_tree.get_signal(self_sig_idx + offset)?;
+
+                    #[cfg(feature = "debug_vm2")]
+                    {
+                        let c = component_tree.components[cmp_idx]
+                            .as_ref()
+                            .unwrap()
+                            .read().unwrap();
+                        println!(
+                            "CopyCmpInputsFromSelf [S{} -> S{}]: cmp {} ({}) sig {} = {}",
+                            component_tree.signals_start + self_sig_idx + offset,
+                            c.signals_start + cmp_sig_idx + offset,
+                            cmp_idx, circuit.templates[c.template_id].name,
+                            cmp_sig_idx + offset, value);
+                    }
+
                     component_tree.components[cmp_idx]
                         .as_ref()
                         .ok_or(RuntimeError::UninitializedComponent)?
                         .write().unwrap()
                         .set_signal(cmp_sig_idx+offset, value)?;
 
-                    #[cfg(feature = "debug_vm2")]
-                    {
-                        let dst_idx =
-                            component_tree.components[cmp_idx]
-                                .as_ref()
-                                .unwrap()
-                                .read().unwrap()
-                                .signals_start
-                                + cmp_sig_idx + offset;
-                        println!(
-                            "CopyCmpInputsFromSelf [S{} -> S{}]: cmp {} sig {} = {}",
-                            component_tree.signals_start + self_sig_idx + offset,
-                            dst_idx, cmp_idx,
-                            cmp_sig_idx + offset, value);
-                    }
                 }
 
                 let mode = flags & 0b11;
@@ -2720,11 +2724,10 @@ where
                         .as_ref().unwrap()
                         .read().unwrap();
                     println!(
-                        "CopyCmpInputsFromSelf: cmp {} inputs left: {}, template: {}",
-                        cmp_idx, c.number_of_inputs,
-                        circuit.templates[c.template_id].name);
+                        "CopyCmpInputsFromSelf: cmp {} ({}) inputs left: {}",
+                        cmp_idx, circuit.templates[c.template_id].name,
+                        c.number_of_inputs);
                 }
-
 
                 if should_run {
                     #[cfg(feature = "debug_vm2")]
@@ -3066,13 +3069,30 @@ pub struct Type {
     pub fields: Vec<TypeField>,
 }
 
+impl Type {
+    pub fn get_total_size(&self) -> usize {
+        self.fields.iter().map(|f| f.get_total_size()).sum()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TypeField {
     pub name: String,
     pub kind: TypeFieldKind,
     pub offset: usize,
-    pub size: usize,
+    pub base_type_size: usize,
     pub dims: Vec<usize>,
+}
+
+impl TypeField {
+    pub fn get_total_size(&self) -> usize {
+        let dim_product: usize = self.dims.iter().product();
+        if dim_product == 0 {
+            self.base_type_size
+        } else {
+            self.base_type_size * dim_product
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -3106,7 +3126,7 @@ impl TypeField {
                 },
             },
             offset: ast_field.offset,
-            size: ast_field.base_type_size,
+            base_type_size: ast_field.base_type_size,
             dims: ast_field.dims.clone(),
         }
     }

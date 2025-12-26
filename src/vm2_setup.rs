@@ -935,15 +935,15 @@ mod tests {
             Type {
                 name: "bus_0".to_string(),
                 fields: vec![
-                    TypeField { name: "x".to_string(), kind: TypeFieldKind::Ff, offset: 0, size: 1, dims: vec![2] },
-                    TypeField { name: "y".to_string(), kind: TypeFieldKind::Ff, offset: 2, size: 1, dims: vec![] },
+                    TypeField { name: "x".to_string(), kind: TypeFieldKind::Ff, offset: 0, base_type_size: 1, dims: vec![2] },
+                    TypeField { name: "y".to_string(), kind: TypeFieldKind::Ff, offset: 2, base_type_size: 1, dims: vec![] },
                 ],
             },
             Type {
                 name: "bus_1".to_string(),
                 fields: vec![
-                    TypeField { name: "start".to_string(), kind: TypeFieldKind::Bus(0), offset: 0, size: 3, dims: vec![2] },
-                    TypeField { name: "end".to_string(), kind: TypeFieldKind::Bus(0), offset: 6, size: 3, dims: vec![] },
+                    TypeField { name: "start".to_string(), kind: TypeFieldKind::Bus(0), offset: 0, base_type_size: 3, dims: vec![2] },
+                    TypeField { name: "end".to_string(), kind: TypeFieldKind::Bus(0), offset: 6, base_type_size: 3, dims: vec![] },
                 ],
             },
         ];

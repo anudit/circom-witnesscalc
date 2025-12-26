@@ -305,7 +305,7 @@ pub enum Statement {
         addr: I64Operand,
         size: I64Operand,
     },
-    CopyCmpInputFromSelf {
+    CopyCmpInputsFromSelf {
         cmp_idx: I64Operand,
         cmp_sig_idx: I64Operand,
         self_sig_idx: I64Operand,

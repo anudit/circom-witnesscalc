@@ -87,14 +87,14 @@ fn test_init_signals_with_buses() {
                         name: "x".to_string(),
                         kind: TypeFieldKind::Ff,
                         offset: 0,
-                        size: 1,
+                        base_type_size: 1,
                         dims: vec![2],
                     },
                     vm2::TypeField{
                         name: "y".to_string(),
                         kind: TypeFieldKind::Ff,
                         offset: 2,
-                        size: 1,
+                        base_type_size: 1,
                         dims: vec![],
                     },
                 ],
@@ -106,14 +106,14 @@ fn test_init_signals_with_buses() {
                         name: "start".to_string(),
                         kind: TypeFieldKind::Bus(0),
                         offset: 0,
-                        size: 3,
+                        base_type_size: 3,
                         dims: vec![2],
                     },
                     vm2::TypeField{
                         name: "end".to_string(),
                         kind: TypeFieldKind::Bus(0),
                         offset: 6,
-                        size: 3,
+                        base_type_size: 3,
                         dims: vec![],
                     },
                 ],
@@ -238,22 +238,22 @@ fn test_init_signals_flat_bus_arrays() {
         vm2::Type{
             name: "bus_0".to_string(),
             fields: vec![
-                vm2::TypeField{ name: "a".to_string(), kind: TypeFieldKind::Ff, offset: 0, size: 1, dims: vec![2] },
-                vm2::TypeField{ name: "b".to_string(), kind: TypeFieldKind::Ff, offset: 2, size: 1, dims: vec![2] },
+                vm2::TypeField{ name: "a".to_string(), kind: TypeFieldKind::Ff, offset: 0, base_type_size: 1, dims: vec![2] },
+                vm2::TypeField{ name: "b".to_string(), kind: TypeFieldKind::Ff, offset: 2, base_type_size: 1, dims: vec![2] },
             ],
         },
         vm2::Type{
             name: "bus_1".to_string(),
             fields: vec![
-                vm2::TypeField{ name: "a".to_string(), kind: TypeFieldKind::Ff, offset: 0, size: 1, dims: vec![6] },
-                vm2::TypeField{ name: "b".to_string(), kind: TypeFieldKind::Ff, offset: 6, size: 1, dims: vec![6] },
+                vm2::TypeField{ name: "a".to_string(), kind: TypeFieldKind::Ff, offset: 0, base_type_size: 1, dims: vec![6] },
+                vm2::TypeField{ name: "b".to_string(), kind: TypeFieldKind::Ff, offset: 6, base_type_size: 1, dims: vec![6] },
             ],
         },
         vm2::Type{
             name: "bus_2".to_string(),
             fields: vec![
-                vm2::TypeField{ name: "a".to_string(), kind: TypeFieldKind::Ff, offset: 0, size: 1, dims: vec![8] },
-                vm2::TypeField{ name: "b".to_string(), kind: TypeFieldKind::Ff, offset: 8, size: 1, dims: vec![8] },
+                vm2::TypeField{ name: "a".to_string(), kind: TypeFieldKind::Ff, offset: 0, base_type_size: 1, dims: vec![8] },
+                vm2::TypeField{ name: "b".to_string(), kind: TypeFieldKind::Ff, offset: 8, base_type_size: 1, dims: vec![8] },
             ],
         }
     ];

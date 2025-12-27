@@ -451,7 +451,7 @@ pub enum I64Expr {
     GetBusFieldPosition(I64Operand, I64Operand), // template_id, signal_id
     GetBusFieldSize(I64Operand, I64Operand), // template_id, signal_id
     GetBusFieldType(I64Operand, I64Operand), // template_id, signal_id
-    GetBusFieldDimension(I64Operand, I64Operand, I64Operand), // template_id, signal_id, dimension_index
+    GetBusFieldDimension(I64Operand, I64Operand, I64Operand), // bus_type_id, field_id, dimension_index
 }
 
 #[cfg_attr(test, derive(PartialEq, Debug))]

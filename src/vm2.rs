@@ -2478,8 +2478,8 @@ where
                 };
 
                 let type_id: i64 = match signal {
-                    Signal::Ff(_) => -1,
-                    Signal::Bus(bus_type_id, _) => *bus_type_id as i64,
+                    Signal::Ff(_) => 0,
+                    Signal::Bus(bus_type_id, _) => *bus_type_id as i64 + 1,
                 };
 
                 vm.push_i64(type_id);
@@ -2529,10 +2529,14 @@ where
             }
             OpCode::GetBusFieldPosition => {
                 let bus_type_id = vm.pop_usize()?;
+                if bus_type_id == 0 {
+                    return Err(Box::new(RuntimeError::InvalidTypeId(0)));
+                }
+                let bus_type_id = bus_type_id - 1;
                 let field_id = vm.pop_usize()?;
 
                 if bus_type_id >= circuit.types.len() {
-                    return Err(Box::new(RuntimeError::InvalidTemplateId(bus_type_id)));
+                    return Err(Box::new(RuntimeError::InvalidTypeId(bus_type_id+1)));
                 }
 
                 let bus_type = &circuit.types[bus_type_id];
@@ -2559,8 +2563,12 @@ where
                 let bus_type_id = vm.pop_usize()?;
                 let field_id = vm.pop_usize()?;
 
+                if bus_type_id == 0 {
+                    return Err(Box::new(RuntimeError::InvalidTypeId(0)));
+                }
+                let bus_type_id = bus_type_id - 1;
                 if bus_type_id >= circuit.types.len() {
-                    return Err(Box::new(RuntimeError::InvalidTemplateId(bus_type_id)));
+                    return Err(Box::new(RuntimeError::InvalidTypeId(bus_type_id+1)));
                 }
 
                 let bus_type = &circuit.types[bus_type_id];
@@ -2628,8 +2636,15 @@ where
                 let field_id = vm.pop_usize()?;
                 let bus_type_id = vm.pop_usize()?;
 
+                if bus_type_id == 0 {
+                    return Err(Box::new(RuntimeError::InvalidTypeId(0)));
+                }
+
+                // type ID 0 is FF. Buses start from index 1
+                let bus_type_id = bus_type_id - 1;
+
                 if bus_type_id >= circuit.types.len() {
-                    return Err(Box::new(RuntimeError::InvalidTemplateId(bus_type_id)));
+                    return Err(Box::new(RuntimeError::InvalidTypeId(bus_type_id+1)));
                 }
 
                 let bus_type = &circuit.types[bus_type_id];

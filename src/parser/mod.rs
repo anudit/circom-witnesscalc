@@ -994,8 +994,8 @@ fn parse_i64_expression(input: &mut &str) -> ModalResult<I64Expr> {
                     preceded(space1, parse_i64_operand),
                     preceded(space1, parse_i64_operand),
                 )
-                .map(|(bus_id, signal_id, dimension_index)| 
-                    I64Expr::GetBusFieldDimension(bus_id, signal_id, dimension_index)),
+                .map(|(bus_type_id, field_id, dimension_index)| 
+                    I64Expr::GetBusFieldDimension(bus_type_id, field_id, dimension_index)),
             _ => fail::<_, I64Expr, _>,
         },
         // Try to parse as a literal

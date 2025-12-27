@@ -552,9 +552,9 @@ where
             operand_i64(ctx, template_id);
             ctx.code.push(OpCode::GetBusFieldType as u8);
         }
-        I64Expr::GetBusFieldDimension(template_id, signal_id, dimension_index) => {
-            operand_i64(ctx, signal_id);
-            operand_i64(ctx, template_id);
+        I64Expr::GetBusFieldDimension(bus_type_id, field_id, dimension_index) => {
+            operand_i64(ctx, bus_type_id);
+            operand_i64(ctx, field_id);
             operand_i64(ctx, dimension_index);
             ctx.code.push(OpCode::GetBusFieldDimension as u8);
         }

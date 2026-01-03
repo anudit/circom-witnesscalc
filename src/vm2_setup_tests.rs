@@ -87,14 +87,14 @@ fn test_init_signals_with_buses() {
                         name: "x".to_string(),
                         kind: TypeFieldKind::Ff,
                         offset: 0,
-                        size: 1,
+                        base_type_size: 1,
                         dims: vec![2],
                     },
                     vm2::TypeField{
                         name: "y".to_string(),
                         kind: TypeFieldKind::Ff,
                         offset: 2,
-                        size: 1,
+                        base_type_size: 1,
                         dims: vec![],
                     },
                 ],
@@ -106,14 +106,14 @@ fn test_init_signals_with_buses() {
                         name: "start".to_string(),
                         kind: TypeFieldKind::Bus(0),
                         offset: 0,
-                        size: 3,
+                        base_type_size: 3,
                         dims: vec![2],
                     },
                     vm2::TypeField{
                         name: "end".to_string(),
                         kind: TypeFieldKind::Bus(0),
                         offset: 6,
-                        size: 3,
+                        base_type_size: 3,
                         dims: vec![],
                     },
                 ],
@@ -238,22 +238,22 @@ fn test_init_signals_flat_bus_arrays() {
         vm2::Type{
             name: "bus_0".to_string(),
             fields: vec![
-                vm2::TypeField{ name: "a".to_string(), kind: TypeFieldKind::Ff, offset: 0, size: 1, dims: vec![2] },
-                vm2::TypeField{ name: "b".to_string(), kind: TypeFieldKind::Ff, offset: 2, size: 1, dims: vec![2] },
+                vm2::TypeField{ name: "a".to_string(), kind: TypeFieldKind::Ff, offset: 0, base_type_size: 1, dims: vec![2] },
+                vm2::TypeField{ name: "b".to_string(), kind: TypeFieldKind::Ff, offset: 2, base_type_size: 1, dims: vec![2] },
             ],
         },
         vm2::Type{
             name: "bus_1".to_string(),
             fields: vec![
-                vm2::TypeField{ name: "a".to_string(), kind: TypeFieldKind::Ff, offset: 0, size: 1, dims: vec![6] },
-                vm2::TypeField{ name: "b".to_string(), kind: TypeFieldKind::Ff, offset: 6, size: 1, dims: vec![6] },
+                vm2::TypeField{ name: "a".to_string(), kind: TypeFieldKind::Ff, offset: 0, base_type_size: 1, dims: vec![6] },
+                vm2::TypeField{ name: "b".to_string(), kind: TypeFieldKind::Ff, offset: 6, base_type_size: 1, dims: vec![6] },
             ],
         },
         vm2::Type{
             name: "bus_2".to_string(),
             fields: vec![
-                vm2::TypeField{ name: "a".to_string(), kind: TypeFieldKind::Ff, offset: 0, size: 1, dims: vec![8] },
-                vm2::TypeField{ name: "b".to_string(), kind: TypeFieldKind::Ff, offset: 8, size: 1, dims: vec![8] },
+                vm2::TypeField{ name: "a".to_string(), kind: TypeFieldKind::Ff, offset: 0, base_type_size: 1, dims: vec![8] },
+                vm2::TypeField{ name: "b".to_string(), kind: TypeFieldKind::Ff, offset: 8, base_type_size: 1, dims: vec![8] },
             ],
         }
     ];
@@ -291,4 +291,22 @@ fn test_init_signals_flat_bus_arrays() {
             "signal {} should be {}", i, expected_value
         );
     }
+}
+
+// cargo run --package circom-witnesscalc --bin cvm-compile ./tests/data/circuit25_heterogeneous_buses_simple2_cvm/circuit25_heterogeneous_buses_simple2.cvm -o ./tests/data/circuit25_heterogeneous_buses_simple2.wcd
+#[test]
+fn test_heterogeneous_bus(){
+    let wcd = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/data/circuit25_heterogeneous_buses_simple2.wcd");
+    let wcd_data = std::fs::read(wcd).unwrap();
+    let mut wcd_reader = std::io::Cursor::new(wcd_data.as_slice());
+    let prime = read_witnesscalc_vm2_header(&mut wcd_reader).unwrap();
+    let want_prime = BigUint::from_bytes_le(&FieldOps::to_le_bytes(&bn254_prime));
+    assert_eq!(want_prime, prime);
+    let ff = Field::new(bn254_prime);
+    let circuit = deserialize_witnesscalc_vm2_body(&mut wcd_reader, ff.clone()).unwrap();
+    let component_tree: Component<U254> = build_component_tree(
+        circuit.main_template_id, &circuit.templates);
+    assert_eq!(8,
+        component_tree.components[0].as_ref().unwrap().read().unwrap().number_of_inputs);
 }

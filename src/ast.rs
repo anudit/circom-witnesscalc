@@ -228,7 +228,7 @@ impl Template {
             }
             Signal::Bus(bus_type, dims) => {
                 if let Some(type_def) = types.iter().find(|t| t.name == *bus_type) {
-                    let base_size = self.calculate_bus_size(type_def);
+                    let base_size = type_def.get_total_size();
                     if dims.is_empty() { base_size } else { base_size * dims.iter().product::<usize>() }
                 } else {
                     // If type not found, return 0 (this shouldn't happen in valid code)
@@ -236,15 +236,6 @@ impl Template {
                 }
             }
         }
-    }
-
-    fn calculate_bus_size(&self, bus_type: &Type) -> usize {
-        let mut total_size = 0;
-        for field in &bus_type.fields {
-            // The size field already contains the total size for this field
-            total_size += field.size;
-        }
-        total_size
     }
 }
 
@@ -314,7 +305,7 @@ pub enum Statement {
         addr: I64Operand,
         size: I64Operand,
     },
-    CopyCmpInputFromSelf {
+    CopyCmpInputsFromSelf {
         cmp_idx: I64Operand,
         cmp_sig_idx: I64Operand,
         self_sig_idx: I64Operand,
@@ -457,10 +448,10 @@ pub enum I64Expr {
     GetTemplateSignalSize(I64Operand, I64Operand), // template_id, signal_id
     GetTemplateSignalType(I64Operand, I64Operand), // template_id, input/output signal_id
     GetTemplateSignalDimension(I64Operand, I64Operand, I64Operand), // template_id, signal_id, dimension_index
-    GetBusSignalPosition(I64Operand, I64Operand), // template_id, signal_id
-    GetBusSignalSize(I64Operand, I64Operand), // template_id, signal_id
-    GetBusSignalType(I64Operand, I64Operand), // template_id, signal_id
-    GetBusSignalDimension(I64Operand, I64Operand, I64Operand), // template_id, signal_id, dimension_index
+    GetBusFieldPosition(I64Operand, I64Operand), // template_id, signal_id
+    GetBusFieldSize(I64Operand, I64Operand), // template_id, signal_id
+    GetBusFieldType(I64Operand, I64Operand), // template_id, signal_id
+    GetBusFieldDimension(I64Operand, I64Operand, I64Operand), // bus_type_id, field_id, dimension_index
 }
 
 #[cfg_attr(test, derive(PartialEq, Debug))]
@@ -488,14 +479,31 @@ pub struct TypeField {
     pub name: String,
     pub kind: TypeFieldKind,
     pub offset: usize,
-    pub size: usize,
+    pub base_type_size: usize,
     pub dims: Vec<usize>,
+}
+
+impl TypeField {
+    pub fn get_total_size(&self) -> usize {
+        let dim_product: usize = self.dims.iter().product();
+        if dim_product == 0 {
+            self.base_type_size
+        } else {
+            self.base_type_size * dim_product
+        }
+    }
 }
 
 #[cfg_attr(test, derive(PartialEq, Debug))]
 pub struct Type {
     pub name: String,
     pub fields: Vec<TypeField>,
+}
+
+impl Type {
+    pub fn get_total_size(&self) -> usize {
+        self.fields.iter().fold(0, |acc, field| acc + field.get_total_size())
+    }
 }
 
 #[cfg_attr(test, derive(PartialEq, Debug))]
@@ -533,14 +541,14 @@ mod tests {
                         name: "x".to_string(),
                         kind: TypeFieldKind::Ff,
                         offset: 0,
-                        size: 1,
+                        base_type_size: 1,
                         dims: vec![],
                     },
                     TypeField {
                         name: "y".to_string(),
                         kind: TypeFieldKind::Ff,
                         offset: 1,
-                        size: 1,
+                        base_type_size: 1,
                         dims: vec![],
                     },
                 ],

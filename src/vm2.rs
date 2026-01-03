@@ -274,12 +274,12 @@ pub enum OpCode {
     //   -2: number of signals to copy
     CopySignalFromMemory = 58,
     CopyCmpInputsFromMemory = 62,
-    GetBusSignalPosition = 64,
-    GetBusSignalSize = 65,
+    GetBusFieldPosition = 64,
+    GetBusFieldSize = 65,
     OpI64Eq = 66,
     FfMStoreFromCmpSignal = 67,
-    GetBusSignalType = 68,
-    GetBusSignalDimension = 69,
+    GetBusFieldType = 68,
+    GetBusFieldDimension = 69,
     OpI64Gt = 71,
     OpI64Gte = 72,
     OpI64Eqz = 73,
@@ -433,8 +433,19 @@ fn calculate_signal_size(signal: &Signal, types: &[Type]) -> usize {
         }
         Signal::Bus(type_idx, dims) => {
             let bus_type = &types[*type_idx];
-            let base_size: usize = bus_type.fields.iter().map(|f| f.size).sum();
-            if dims.is_empty() { base_size } else { base_size * dims.iter().product::<usize>() }
+            let bus_size = bus_type.get_total_size();
+            if dims.is_empty() { bus_size } else { bus_size * dims.iter().product::<usize>() }
+        }
+    }
+}
+
+fn calculate_signal_base_size(signal: &Signal, types: &[Type]) -> usize {
+    match signal {
+        Signal::Ff(..) => 1,
+        Signal::Bus(type_idx, ..) => {
+            let bus_type = &types[*type_idx];
+            let base_size: usize = bus_type.get_total_size();
+            base_size
         }
     }
 }
@@ -1424,17 +1435,17 @@ where
         OpCode::CopyCmpInputsFromMemory => {
             output.push_str("CopyCmpInputsFromMemory");
         }
-        OpCode::GetBusSignalPosition => {
-            output.push_str("GetBusSignalPosition");
+        OpCode::GetBusFieldPosition => {
+            output.push_str("GetBusFieldPosition");
         }
-        OpCode::GetBusSignalSize => {
-            output.push_str("GetBusSignalSize");
+        OpCode::GetBusFieldSize => {
+            output.push_str("GetBusFieldSize");
         }
-        OpCode::GetBusSignalType => {
-            output.push_str("GetBusSignalType");
+        OpCode::GetBusFieldType => {
+            output.push_str("GetBusFieldType");
         }
-        OpCode::GetBusSignalDimension => {
-            output.push_str("GetBusSignalDimension");
+        OpCode::GetBusFieldDimension => {
+            output.push_str("GetBusFieldDimension");
         }
     }
 
@@ -1775,6 +1786,16 @@ where
                     }
                     Some(ref mut c) => {
                         let mut run = false;
+                        #[cfg(feature = "debug_vm2")]
+                        {
+                            let c = c.read().unwrap();
+                            println!(
+                                "StoreCmpSignalCntCheck [S{}]: cmp {} ({}) sig {} = {}, inputs left: {}",
+                                c.signals_start+sig_idx, cmp_idx,
+                                circuit.templates[c.template_id].name, sig_idx,
+                                value, c.number_of_inputs-1);
+                        }
+
                         {
                             let mut c = c.write().unwrap();
                             c.set_signal(sig_idx, value)?;
@@ -1782,14 +1803,6 @@ where
                             if c.number_of_inputs == 0 {
                                 run = true;
                             }
-                        }
-                        #[cfg(feature = "debug_vm2")]
-                        {
-                            let c = c.read().unwrap();
-                            println!(
-                                "StoreCmpSignalCntCheck [S{}]: {}[{}/{}] = {}, inputs left: {}, template: {}",
-                                c.signals_start + sig_idx, cmp_idx, c.signals_start, sig_idx, value,
-                                c.number_of_inputs, circuit.templates[c.template_id].name);
                         }
                         if run {
                             #[cfg(feature = "debug_vm2")]
@@ -1821,18 +1834,20 @@ where
                             Box::new(RuntimeError::UninitializedComponent))
                     }
                     Some(ref mut c) => {
-                        {
-                            let mut c = c.write().unwrap();
-                            c.set_signal(sig_idx, value)?;
-                            c.number_of_inputs -= 1;
-                        }
                         #[cfg(feature = "debug_vm2")]
                         {
                             let c = c.read().unwrap();
                             println!(
-                                "StoreCmpInputCnt [S{}]: {}[{}/{}] = {}, inputs left: {}, template: {}",
-                                c.signals_start + sig_idx, cmp_idx, c.signals_start, sig_idx, value,
-                                c.number_of_inputs, circuit.templates[c.template_id].name);
+                                "StoreCmpInputCnt [S{}]: cmp {} ({}) sig {} = {}, inputs left: {}",
+                                c.signals_start+sig_idx, cmp_idx,
+                                circuit.templates[c.template_id].name, sig_idx,
+                                value, c.number_of_inputs-1);
+                        }
+
+                        {
+                            let mut c = c.write().unwrap();
+                            c.set_signal(sig_idx, value)?;
+                            c.number_of_inputs -= 1;
                         }
                         // Skip the check for c.number_of_inputs == 0 and component execution
                     }
@@ -2429,9 +2444,9 @@ where
                 }
                 
                 let size = if signal_id < num_outputs {
-                    calculate_signal_size(&template.outputs[signal_id], &circuit.types)
+                    calculate_signal_base_size(&template.outputs[signal_id], &circuit.types)
                 } else {
-                    calculate_signal_size(&template.inputs[signal_id - num_outputs], &circuit.types)
+                    calculate_signal_base_size(&template.inputs[signal_id - num_outputs], &circuit.types)
                 };
                 
                 vm.push_i64(size as i64);
@@ -2463,8 +2478,8 @@ where
                 };
 
                 let type_id: i64 = match signal {
-                    Signal::Ff(_) => -1,
-                    Signal::Bus(bus_type_id, _) => *bus_type_id as i64,
+                    Signal::Ff(_) => 0,
+                    Signal::Bus(bus_type_id, _) => *bus_type_id as i64 + 1,
                 };
 
                 vm.push_i64(type_id);
@@ -2512,12 +2527,16 @@ where
                 
                 vm.push_i64(dims[dimension_index] as i64);
             }
-            OpCode::GetBusSignalPosition => {
+            OpCode::GetBusFieldPosition => {
                 let bus_type_id = vm.pop_usize()?;
+                if bus_type_id == 0 {
+                    return Err(Box::new(RuntimeError::InvalidTypeId(0)));
+                }
+                let bus_type_id = bus_type_id - 1;
                 let field_id = vm.pop_usize()?;
 
                 if bus_type_id >= circuit.types.len() {
-                    return Err(Box::new(RuntimeError::InvalidTemplateId(bus_type_id)));
+                    return Err(Box::new(RuntimeError::InvalidTypeId(bus_type_id+1)));
                 }
 
                 let bus_type = &circuit.types[bus_type_id];
@@ -2535,17 +2554,21 @@ where
                 #[cfg(feature = "debug_vm2")]
                 {
                     println!(
-                        "GetBusSignalPosition: bus_type {} field {} => offset {}",
+                        "GetBusFieldPosition: bus_type {} field {} => offset {}",
                         bus_type_id, field_id, position
                     );
                 }
             }
-            OpCode::GetBusSignalSize => {
+            OpCode::GetBusFieldSize => {
                 let bus_type_id = vm.pop_usize()?;
                 let field_id = vm.pop_usize()?;
 
+                if bus_type_id == 0 {
+                    return Err(Box::new(RuntimeError::InvalidTypeId(0)));
+                }
+                let bus_type_id = bus_type_id - 1;
                 if bus_type_id >= circuit.types.len() {
-                    return Err(Box::new(RuntimeError::InvalidTemplateId(bus_type_id)));
+                    return Err(Box::new(RuntimeError::InvalidTypeId(bus_type_id+1)));
                 }
 
                 let bus_type = &circuit.types[bus_type_id];
@@ -2557,18 +2580,18 @@ where
                     )));
                 }
 
-                let size = bus_type.fields[field_id].size;
+                let size = bus_type.fields[field_id].base_type_size;
                 vm.push_i64(size as i64);
 
                 #[cfg(feature = "debug_vm2")]
                 {
                     println!(
-                        "GetBusSignalSize: bus_type {} field {} => size {}",
+                        "GetBusFieldSize: bus_type {} field {} => size {}",
                         bus_type_id, field_id, size
                     );
                 }
             }
-            OpCode::GetBusSignalType => {
+            OpCode::GetBusFieldType => {
                 let bus_type_id = vm.pop_usize()?;
                 let field_id = vm.pop_usize()?;
 
@@ -2603,18 +2626,25 @@ where
                 #[cfg(feature = "debug_vm2")]
                 {
                     println!(
-                        "GetBusSignalType: bus_type {} field {} => type {}",
+                        "GetBusFieldType: bus_type {} field {} => type {}",
                         bus_type_id, field_id, type_id
                     );
                 }
             }
-            OpCode::GetBusSignalDimension => {
+            OpCode::GetBusFieldDimension => {
                 let dimension_idx = vm.pop_usize()?;
                 let field_id = vm.pop_usize()?;
                 let bus_type_id = vm.pop_usize()?;
 
+                if bus_type_id == 0 {
+                    return Err(Box::new(RuntimeError::InvalidTypeId(0)));
+                }
+
+                // type ID 0 is FF. Buses start from index 1
+                let bus_type_id = bus_type_id - 1;
+
                 if bus_type_id >= circuit.types.len() {
-                    return Err(Box::new(RuntimeError::InvalidTemplateId(bus_type_id)));
+                    return Err(Box::new(RuntimeError::InvalidTypeId(bus_type_id+1)));
                 }
 
                 let bus_type = &circuit.types[bus_type_id];
@@ -2641,7 +2671,7 @@ where
 
                 #[cfg(feature = "debug_vm2")]
                 println!(
-                    "GetBusSignalDimension: bus_type={} field={} dim[{}]={}",
+                    "GetBusFieldDimension: bus_type={} field={} dim[{}]={}",
                     bus_type_id, field_id, dimension_idx, dim_length
                 );
             }
@@ -2659,27 +2689,27 @@ where
 
                 for offset in 0..num_signals {
                     let value = component_tree.get_signal(self_sig_idx + offset)?;
+
+                    #[cfg(feature = "debug_vm2")]
+                    {
+                        let c = component_tree.components[cmp_idx]
+                            .as_ref()
+                            .unwrap()
+                            .read().unwrap();
+                        println!(
+                            "CopyCmpInputsFromSelf [S{} -> S{}]: cmp {} ({}) sig {} = {}",
+                            component_tree.signals_start + self_sig_idx + offset,
+                            c.signals_start + cmp_sig_idx + offset,
+                            cmp_idx, circuit.templates[c.template_id].name,
+                            cmp_sig_idx + offset, value);
+                    }
+
                     component_tree.components[cmp_idx]
                         .as_ref()
                         .ok_or(RuntimeError::UninitializedComponent)?
                         .write().unwrap()
                         .set_signal(cmp_sig_idx+offset, value)?;
 
-                    #[cfg(feature = "debug_vm2")]
-                    {
-                        let dst_idx =
-                            component_tree.components[cmp_idx]
-                                .as_ref()
-                                .unwrap()
-                                .read().unwrap()
-                                .signals_start
-                                + cmp_sig_idx + offset;
-                        println!(
-                            "CopyCmpInputsFromSelf [S{} -> S{}]: cmp {} sig {} = {} / {}",
-                            component_tree.signals_start + self_sig_idx + offset,
-                            dst_idx, cmp_idx,
-                            cmp_sig_idx + offset, value, value);
-                    }
                 }
 
                 let mode = flags & 0b11;
@@ -2709,11 +2739,10 @@ where
                         .as_ref().unwrap()
                         .read().unwrap();
                     println!(
-                        "CopyCmpInputsFromSelf: cmp {} inputs left: {}, template: {}",
-                        cmp_idx, c.number_of_inputs,
-                        circuit.templates[c.template_id].name);
+                        "CopyCmpInputsFromSelf: cmp {} ({}) inputs left: {}",
+                        cmp_idx, circuit.templates[c.template_id].name,
+                        c.number_of_inputs);
                 }
-
 
                 if should_run {
                     #[cfg(feature = "debug_vm2")]
@@ -3055,13 +3084,30 @@ pub struct Type {
     pub fields: Vec<TypeField>,
 }
 
+impl Type {
+    pub fn get_total_size(&self) -> usize {
+        self.fields.iter().map(|f| f.get_total_size()).sum()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TypeField {
     pub name: String,
     pub kind: TypeFieldKind,
     pub offset: usize,
-    pub size: usize,
+    pub base_type_size: usize,
     pub dims: Vec<usize>,
+}
+
+impl TypeField {
+    pub fn get_total_size(&self) -> usize {
+        let dim_product: usize = self.dims.iter().product();
+        if dim_product == 0 {
+            self.base_type_size
+        } else {
+            self.base_type_size * dim_product
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -3095,7 +3141,7 @@ impl TypeField {
                 },
             },
             offset: ast_field.offset,
-            size: ast_field.size,
+            base_type_size: ast_field.base_type_size,
             dims: ast_field.dims.clone(),
         }
     }

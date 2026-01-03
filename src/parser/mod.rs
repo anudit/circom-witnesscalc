@@ -146,7 +146,7 @@ fn parse_type_field(input: &mut &str) -> ModalResult<TypeField> {
         name: name.strip_prefix('$').unwrap_or(name).to_string(),
         kind,
         offset,
-        size,
+        base_type_size: size,
         dims,
     })
 }
@@ -580,7 +580,7 @@ fn parse_statement(input: &mut &str) -> ModalResult<Statement> {
             preceded(space1, parse_i64_operand),
             preceded(space1, parse_i64_operand),
             preceded(space1, parse_i64_operand))
-            .map(|(cmp_idx, cmp_sig_idx, self_sig_idx, size)| Statement::CopyCmpInputFromSelf {
+            .map(|(cmp_idx, cmp_sig_idx, self_sig_idx, size)| Statement::CopyCmpInputsFromSelf {
                 cmp_idx,
                 cmp_sig_idx,
                 self_sig_idx,
@@ -592,7 +592,7 @@ fn parse_statement(input: &mut &str) -> ModalResult<Statement> {
             preceded(space1, parse_i64_operand),
             preceded(space1, parse_i64_operand),
             preceded(space1, parse_i64_operand))
-            .map(|(cmp_idx, cmp_sig_idx, self_sig_idx, size)| Statement::CopyCmpInputFromSelf {
+            .map(|(cmp_idx, cmp_sig_idx, self_sig_idx, size)| Statement::CopyCmpInputsFromSelf {
                 cmp_idx,
                 cmp_sig_idx,
                 self_sig_idx,
@@ -604,7 +604,7 @@ fn parse_statement(input: &mut &str) -> ModalResult<Statement> {
             preceded(space1, parse_i64_operand),
             preceded(space1, parse_i64_operand),
             preceded(space1, parse_i64_operand))
-            .map(|(cmp_idx, cmp_sig_idx, self_sig_idx, size)| Statement::CopyCmpInputFromSelf {
+            .map(|(cmp_idx, cmp_sig_idx, self_sig_idx, size)| Statement::CopyCmpInputsFromSelf {
                 cmp_idx,
                 cmp_sig_idx,
                 self_sig_idx,
@@ -616,7 +616,7 @@ fn parse_statement(input: &mut &str) -> ModalResult<Statement> {
             preceded(space1, parse_i64_operand),
             preceded(space1, parse_i64_operand),
             preceded(space1, parse_i64_operand))
-            .map(|(cmp_idx, cmp_sig_idx, self_sig_idx, size)| Statement::CopyCmpInputFromSelf {
+            .map(|(cmp_idx, cmp_sig_idx, self_sig_idx, size)| Statement::CopyCmpInputsFromSelf {
                 cmp_idx,
                 cmp_sig_idx,
                 self_sig_idx,
@@ -839,7 +839,7 @@ fn parse_statement(input: &mut &str) -> ModalResult<Statement> {
 
     // For set_signal, ff.store, set_cmp_input_run, error, ff.mreturn, and ff.mcall, we need to parse the line end
     match &s {
-        Statement::SetSignal { .. } | Statement::FfStore { .. } | Statement::SetCmpSignalRun { .. } | Statement::SetCmpInputCnt { .. } | Statement::SetCmpInputCntCheck { .. } | Statement::CopyCmpInputFromSelf { .. } | Statement::CopyCmpInputFromCmp { .. } | Statement::CopySignal { .. } | Statement::CopySignalFromCmp { .. } | Statement::CopySignalFromMemory { .. } | Statement::Error { .. } | Statement::FfMReturn { .. } | Statement::FfMStore { .. } | Statement::FfReturn { .. } | Statement::FfMCall { .. } => {
+        Statement::SetSignal { .. } | Statement::FfStore { .. } | Statement::SetCmpSignalRun { .. } | Statement::SetCmpInputCnt { .. } | Statement::SetCmpInputCntCheck { .. } | Statement::CopyCmpInputsFromSelf { .. } | Statement::CopyCmpInputFromCmp { .. } | Statement::CopySignal { .. } | Statement::CopySignalFromCmp { .. } | Statement::CopySignalFromMemory { .. } | Statement::Error { .. } | Statement::FfMReturn { .. } | Statement::FfMStore { .. } | Statement::FfReturn { .. } | Statement::FfMCall { .. } => {
             (space0, opt(parse_eol_comment), parse_line_end).parse_next(input)?;
         }
         _ => {}
@@ -974,28 +974,28 @@ fn parse_i64_expression(input: &mut &str) -> ModalResult<I64Expr> {
                 )
                 .map(|(template_id, signal_id, dimension_index)| 
                     I64Expr::GetTemplateSignalDimension(template_id, signal_id, dimension_index)),
-            "get_bus_signal_position" => (
+            "get_bus_field_position" => (
                     preceded(space1, parse_i64_operand),
                     preceded(space1, parse_i64_operand),
                 )
-                .map(|(bus_id, signal_id)| I64Expr::GetBusSignalPosition(bus_id, signal_id)),
-            "get_bus_signal_size" => (
+                .map(|(bus_id, signal_id)| I64Expr::GetBusFieldPosition(bus_id, signal_id)),
+            "get_bus_field_size" => (
                     preceded(space1, parse_i64_operand),
                     preceded(space1, parse_i64_operand),
                 )
-                .map(|(bus_id, signal_id)| I64Expr::GetBusSignalSize(bus_id, signal_id)),
-            "get_bus_signal_type" => (
+                .map(|(bus_id, signal_id)| I64Expr::GetBusFieldSize(bus_id, signal_id)),
+            "get_bus_field_type" => (
                     preceded(space1, parse_i64_operand),
                     preceded(space1, parse_i64_operand),
                 )
-                .map(|(bus_id, signal_id)| I64Expr::GetBusSignalType(bus_id, signal_id)),
-            "get_bus_signal_dimension" => (
+                .map(|(bus_id, signal_id)| I64Expr::GetBusFieldType(bus_id, signal_id)),
+            "get_bus_field_dimension" => (
                     preceded(space1, parse_i64_operand),
                     preceded(space1, parse_i64_operand),
                     preceded(space1, parse_i64_operand),
                 )
-                .map(|(bus_id, signal_id, dimension_index)| 
-                    I64Expr::GetBusSignalDimension(bus_id, signal_id, dimension_index)),
+                .map(|(bus_type_id, field_id, dimension_index)| 
+                    I64Expr::GetBusFieldDimension(bus_type_id, field_id, dimension_index)),
             _ => fail::<_, I64Expr, _>,
         },
         // Try to parse as a literal
@@ -1600,7 +1600,7 @@ x";
     #[test]
     fn test_parse_mset_cmp_input_variants() {
         let input = "mset_cmp_input i64.1 i64.2 i64.3 i64.4";
-        let want = Statement::CopyCmpInputFromSelf {
+        let want = Statement::CopyCmpInputsFromSelf {
             cmp_idx: i64_op("1"),
             cmp_sig_idx: i64_op("2"),
             self_sig_idx: i64_op("3"),
@@ -1612,7 +1612,7 @@ x";
 
         let mut input = "mset_cmp_input_cnt i64.10 i64.11 i64.12 size_var ;; comment
 rest";
-        let want = Statement::CopyCmpInputFromSelf {
+        let want = Statement::CopyCmpInputsFromSelf {
             cmp_idx: i64_op("10"),
             cmp_sig_idx: i64_op("11"),
             self_sig_idx: i64_op("12"),
@@ -1624,7 +1624,7 @@ rest";
         assert_eq!(input, "rest");
 
         let input = "mset_cmp_input_run cmp_idx sig_idx self_idx i64.8";
-        let want = Statement::CopyCmpInputFromSelf {
+        let want = Statement::CopyCmpInputsFromSelf {
             cmp_idx: i64_op("cmp_idx"),
             cmp_sig_idx: i64_op("sig_idx"),
             self_sig_idx: i64_op("self_idx"),
@@ -1635,7 +1635,7 @@ rest";
         assert_eq!(statement, want);
 
         let input = "mset_cmp_input_cnt_check i64.1 cmp_sig self_sig i64.16";
-        let want = Statement::CopyCmpInputFromSelf {
+        let want = Statement::CopyCmpInputsFromSelf {
             cmp_idx: i64_op("1"),
             cmp_sig_idx: i64_op("cmp_sig"),
             self_sig_idx: i64_op("self_sig"),
@@ -2294,14 +2294,14 @@ x_1 = get_signal i64.2
                     name: "x".to_string(),
                     kind: TypeFieldKind::Ff,
                     offset: 0,
-                    size: 1,
+                    base_type_size: 1,
                     dims: vec![],
                 },
                 TypeField {
                     name: "y".to_string(),
                     kind: TypeFieldKind::Ff,
                     offset: 1,
-                    size: 1,
+                    base_type_size: 1,
                     dims: vec![],
                 },
             ],
@@ -2356,14 +2356,14 @@ x_1 = get_signal i64.2
                             name: "x".to_string(),
                             kind: TypeFieldKind::Ff,
                             offset: 0,
-                            size: 1,
+                            base_type_size: 1,
                             dims: vec![],
                         },
                         TypeField {
                             name: "y".to_string(),
                             kind: TypeFieldKind::Ff,
                             offset: 1,
-                            size: 1,
+                            base_type_size: 1,
                             dims: vec![],
                         },
                     ],
@@ -2375,14 +2375,14 @@ x_1 = get_signal i64.2
                             name: "start".to_string(),
                             kind: TypeFieldKind::Bus("bus_0".to_string()),
                             offset: 0,
-                            size: 2,
+                            base_type_size: 2,
                             dims: vec![],
                         },
                         TypeField {
                             name: "end".to_string(),
                             kind: TypeFieldKind::Bus("bus_0".to_string()),
                             offset: 2,
-                            size: 2,
+                            base_type_size: 2,
                             dims: vec![],
                         },
                     ],
@@ -2394,7 +2394,7 @@ x_1 = get_signal i64.2
                             name: "v".to_string(),
                             kind: TypeFieldKind::Bus("bus_1".to_string()),
                             offset: 0,
-                            size: 4,
+                            base_type_size: 4,
                             dims: vec![2],
                         },
                     ],

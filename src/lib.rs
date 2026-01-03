@@ -487,7 +487,7 @@ pub fn calculate_witness_vm2<T: FieldOps>(
         .map_err(|e| -> Box<dyn std::error::Error> { e })?;
     println!("VM2 executed in {:?}", start.elapsed());
 
-    let witness_signals = witness_signals(&component_tree, &circuit.witness)?;
+    let witness_signals = witness_signals(&component_tree, &circuit.witness);
     let wtns_data = witness(witness_signals, circuit.field.prime)?;
 
     w.write_all(&wtns_data)?;
@@ -498,7 +498,7 @@ pub fn calculate_witness_vm2<T: FieldOps>(
 
 fn witness_signals<T: FieldOps>(
     component_tree: &vm2::Component<T>,
-    witness_signals: &[usize]) -> Result<Vec<T>, Box<dyn std::error::Error>> {
+    witness_signals: &[usize]) -> Vec<T> {
 
     let start = std::time::Instant::now();
     let signals_num = component_tree.total_signals_len() + 1;
@@ -508,16 +508,14 @@ fn witness_signals<T: FieldOps>(
 
     let mut witness: Vec<T> = Vec::with_capacity(witness_signals.len());
     for idx in witness_signals {
-        witness.push(
-            signals[*idx]
-                .ok_or_else(|| format!("witness signal {} not set", idx))?);
+        witness.push(signals[*idx].unwrap_or_else(T::zero));
     }
 
     println!(
-        "Witness signals gethered in {:?}. Total signals: {}, witness signals: {}.",
+        "Witness signals gathered in {:?}. Total signals: {}, witness signals: {}.",
         start.elapsed(), signals_num, witness.len());
 
-    Ok(witness)
+    witness
 }
 fn witness<T: FieldOps>(
     witness_signals: Vec<T>,

@@ -793,7 +793,7 @@ pub fn serialize_witnesscalc_vm2<T: FieldOps>(
 
             // Write offset and size
             w.write_u32::<LittleEndian>(field.offset as u32)?;
-            w.write_u32::<LittleEndian>(field.size as u32)?;
+            w.write_u32::<LittleEndian>(field.base_type_size as u32)?;
 
             // Write dims
             w.write_u32::<LittleEndian>(field.dims.len() as u32)?;
@@ -1030,7 +1030,7 @@ pub fn deserialize_witnesscalc_vm2_body<T: FieldOps>(
                 name: field_name,
                 kind,
                 offset,
-                size,
+                base_type_size: size,
                 dims,
             });
         }
@@ -1389,14 +1389,14 @@ mod tests {
                             name: "field1".to_string(),
                             kind: vm2::TypeFieldKind::Ff,
                             offset: 0,
-                            size: 1,
+                            base_type_size: 1,
                             dims: vec![],
                         },
                         vm2::TypeField {
                             name: "field2".to_string(),
                             kind: vm2::TypeFieldKind::Bus(0), // Index 0 in types vector
                             offset: 1,
-                            size: 5,
+                            base_type_size: 5,
                             dims: vec![2, 3],
                         },
                     ],
@@ -1468,7 +1468,7 @@ mod tests {
                     _ => panic!("Type field kind mismatch"),
                 }
                 assert_eq!(f1.offset, f2.offset);
-                assert_eq!(f1.size, f2.size);
+                assert_eq!(f1.base_type_size, f2.base_type_size);
                 assert_eq!(f1.dims, f2.dims);
             }
         }
@@ -1574,7 +1574,7 @@ mod tests {
                             name: "フィールド".to_string(), // Japanese characters
                             kind: vm2::TypeFieldKind::Bus(0), // Index 0 in types vector
                             offset: 0,
-                            size: 1,
+                            base_type_size: 1,
                             dims: vec![],
                         },
                     ],

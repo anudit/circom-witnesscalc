@@ -12,13 +12,19 @@ pub fn init_signals<T: FieldOps, F>(
 where
         for <'a> &'a F: FieldOperations<Type = T> {
 
-    let first_offset = input_infos.first()
-        .ok_or("no input infos provided")?
-        .offset;
+    let input_signals = parse_signals_json(inputs_json, ff)?;
+
+    if input_infos.is_empty() {
+        return if input_signals.is_empty() {
+            Ok(())
+        } else {
+            Err("input JSON contains signals but circuit has no inputs".into())
+        };
+    }
+
+    let first_offset = input_infos.first().unwrap().offset;
     let total_inputs = calculate_total_input_signals(input_infos, types);
     let mut signals_set = vec![false; total_inputs];
-
-    let input_signals = parse_signals_json(inputs_json, ff)?;
 
     for (path, value) in input_signals.iter() {
         let signal_idx = path_to_signal_idx(path, input_infos, types)
@@ -929,15 +935,15 @@ mod tests {
             Type {
                 name: "bus_0".to_string(),
                 fields: vec![
-                    TypeField { name: "x".to_string(), kind: TypeFieldKind::Ff, offset: 0, size: 1, dims: vec![2] },
-                    TypeField { name: "y".to_string(), kind: TypeFieldKind::Ff, offset: 2, size: 1, dims: vec![] },
+                    TypeField { name: "x".to_string(), kind: TypeFieldKind::Ff, offset: 0, base_type_size: 1, dims: vec![2] },
+                    TypeField { name: "y".to_string(), kind: TypeFieldKind::Ff, offset: 2, base_type_size: 1, dims: vec![] },
                 ],
             },
             Type {
                 name: "bus_1".to_string(),
                 fields: vec![
-                    TypeField { name: "start".to_string(), kind: TypeFieldKind::Bus(0), offset: 0, size: 3, dims: vec![2] },
-                    TypeField { name: "end".to_string(), kind: TypeFieldKind::Bus(0), offset: 6, size: 3, dims: vec![] },
+                    TypeField { name: "start".to_string(), kind: TypeFieldKind::Bus(0), offset: 0, base_type_size: 3, dims: vec![2] },
+                    TypeField { name: "end".to_string(), kind: TypeFieldKind::Bus(0), offset: 6, base_type_size: 3, dims: vec![] },
                 ],
             },
         ];

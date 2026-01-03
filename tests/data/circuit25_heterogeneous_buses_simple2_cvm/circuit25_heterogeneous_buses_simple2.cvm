@@ -1,0 +1,624 @@
+;; Prime value
+%%prime 21888242871839275222246405745257275088548364400416034343698204186575808495617
+
+
+;; Memory of signals
+%%signals 88
+
+
+;; Heap of components
+%%components_heap 15
+
+
+;; Types (for each field we store name type offset size nDims dims)
+%%type $bus_0
+       $a $ff 0 1 2  2 2
+       $b $ff 4 1 2  2 2
+%%type $bus_1
+       $a $ff 0 1 2  3 2
+       $b $ff 6 1 2  3 2
+
+
+;; Main template
+%%start B_2
+
+
+;; Component creation mode (implicit/explicit)
+%%components implicit
+
+
+;; Witness (signal list)
+%%witness 0 1 2 3
+
+
+;; Input signals
+%%input 3
+"in1" bus_0 0 
+"in2" bus_1 0 
+"in3" bus_0 0 
+
+
+%%template A_0 [ bus_0 0 ] [ bus_0 0 ] [16] [ ]
+x_0 = i64.1
+;; getting dest
+ff.store i64.0 ff.2
+;; end of store bucket
+;;line 15
+x_1 = i64.8
+x_2 = i64.0
+x_3 = i64.8
+loop
+i64.if x_3 
+x_4 = get_signal x_1
+set_signal x_2 x_4
+x_1 = i64.add x_1 i64.1
+x_2 = i64.add x_2 i64.1
+x_3 = i64.sub x_3 i64.1
+continue
+end
+break
+end
+;; end of store bucket
+
+%%template A_1 [ bus_1 0 ] [ bus_1 0 ] [24] [ ]
+x_5 = i64.1
+;;line 0
+;; getting dest
+ff.store i64.0 ff.3
+;; end of store bucket
+;;line 17
+x_6 = i64.18
+x_7 = i64.0
+x_8 = i64.6
+loop
+i64.if x_8 
+x_9 = get_signal x_6
+set_signal x_7 x_9
+x_6 = i64.add x_6 i64.1
+x_7 = i64.add x_7 i64.1
+x_8 = i64.sub x_8 i64.1
+continue
+end
+break
+end
+;; end of store bucket
+;;line 18
+x_10 = i64.12
+x_11 = i64.6
+x_12 = i64.6
+loop
+i64.if x_12 
+x_13 = get_signal x_10
+set_signal x_11 x_13
+x_10 = i64.add x_10 i64.1
+x_11 = i64.add x_11 i64.1
+x_12 = i64.sub x_12 i64.1
+continue
+end
+break
+end
+;; end of store bucket
+
+%%template B_2 [ ff 1 3] [ bus_0 0  bus_1 0  bus_0 0 ] [31] [ 0 1 0 ]
+x_14 = i64.8
+;;line 0
+;; getting dest
+ff.store i64.0 ff.2
+;; end of store bucket
+;; getting dest
+ff.store i64.1 ff.3
+;; end of store bucket
+;; getting dest
+ff.store i64.2 ff.2
+;; end of store bucket
+;;line 30
+;; getting dest
+ff.store i64.3 ff.0
+;; end of store bucket
+;; getting dest
+ff.store i64.4 ff.0
+;; end of store bucket
+;; getting dest
+ff.store i64.5 ff.0
+;; end of store bucket
+;; getting dest
+ff.store i64.3 ff.2
+;; end of store bucket
+;; getting dest
+ff.store i64.4 ff.3
+;; end of store bucket
+;; getting dest
+ff.store i64.5 ff.2
+;; end of store bucket
+;;line 34
+;; getting dest
+ff.store i64.6 ff.0
+;; end of store bucket
+;; loop bucket. Line 34
+loop
+;; compute bucket
+;; load bucket
+x_16 = ff.load i64.6
+;; end of load bucket
+;; OP(LESSER)
+x_15 = ff.lt x_16 ff.3
+;; end of compute bucket
+ff.if x_15
+;;line 36
+;; getting dest
+ff.store i64.7 ff.0
+;; end of store bucket
+;; loop bucket. Line 36
+loop
+;; compute bucket
+;; load bucket
+x_18 = ff.load i64.7
+;; end of load bucket
+;; load bucket
+;; compute bucket
+;; compute bucket
+;; compute bucket
+;; load bucket
+x_22 = ff.load i64.6
+;; end of load bucket
+;; OP(TO_ADDRESS)
+x_21 = i64.wrap_ff x_22
+;; end of compute bucket
+;; OP(MUL_ADDRESS)
+;;line 30
+x_20 = i64.mul i64.1 x_21
+;; end of compute bucket
+;; OP(ADD_ADDRESS)
+x_19 = i64.add x_20 i64.3
+;; end of compute bucket
+x_23 = ff.load x_19
+;; end of load bucket
+;; OP(LESSER)
+;;line 36
+x_17 = ff.lt x_18 x_23
+;; end of compute bucket
+ff.if x_17
+;; branch bucket
+;; compute bucket
+;; load bucket
+;;line 37
+x_25 = ff.load i64.6
+;; end of load bucket
+;; OP(EQ(Single(1)))
+x_24 = ff.eq x_25 ff.0
+;; end of compute bucket
+ff.if x_24
+;;line 38
+;; compute bucket
+;; compute bucket
+;; compute bucket
+;; load bucket
+x_29 = ff.load i64.7
+;; end of load bucket
+;; OP(TO_ADDRESS)
+x_28 = i64.wrap_ff x_29
+;; end of compute bucket
+;; OP(MUL_ADDRESS)
+;;line 0
+x_27 = i64.mul i64.2 x_28
+;; end of compute bucket
+;; OP(ADD_ADDRESS)
+x_26 = i64.add x_27 i64.3
+;; end of compute bucket
+;;line 38
+;; is subcomponent mapped
+x_34 = get_template_id i64.0
+x_35 = get_template_signal_position x_34 i64.1
+x_36 = get_template_signal_type x_34 i64.1
+x_37 =  get_bus_field_position x_36 i64.0
+x_38 = i64.add x_35 x_37
+;; compute bucket
+;; load bucket
+x_40 = ff.load i64.7
+;; end of load bucket
+;; OP(TO_ADDRESS)
+x_39 = i64.wrap_ff x_40
+;; end of compute bucket
+x_41 = x_39
+x_42 =  get_bus_field_size x_34 i64.1
+x_43 = i64.mul x_41 x_42
+x_44 = i64.add x_38 x_43
+;; end of load bucket
+x_30 = x_26
+x_31 = x_44
+x_32 = i64.1
+loop
+i64.if x_32 
+x_33 = get_signal x_30
+set_cmp_input_cnt i64.0 x_31 x_33
+x_30 = i64.add x_30 i64.1
+x_31 = i64.add x_31 i64.1
+x_32 = i64.sub x_32 i64.1
+continue
+end
+break
+end
+x_33 = get_signal x_30
+set_cmp_input_cnt_check i64.0 x_31 x_33
+;; end of store bucket
+;;line 39
+;; compute bucket
+;; compute bucket
+;; compute bucket
+;; compute bucket
+;; load bucket
+x_49 = ff.load i64.7
+;; end of load bucket
+;; OP(TO_ADDRESS)
+x_48 = i64.wrap_ff x_49
+;; end of compute bucket
+;; OP(MUL_ADDRESS)
+;;line 0
+x_47 = i64.mul i64.2 x_48
+;; end of compute bucket
+;; OP(ADD_ADDRESS)
+x_46 = i64.add i64.4 x_47
+;; end of compute bucket
+;; OP(ADD_ADDRESS)
+x_45 = i64.add x_46 i64.3
+;; end of compute bucket
+;;line 39
+;; is subcomponent mapped
+x_54 = get_template_id i64.0
+x_55 = get_template_signal_position x_54 i64.1
+x_56 = get_template_signal_type x_54 i64.1
+x_57 =  get_bus_field_position x_56 i64.1
+x_58 = i64.add x_55 x_57
+;; compute bucket
+;; load bucket
+x_60 = ff.load i64.7
+;; end of load bucket
+;; OP(TO_ADDRESS)
+x_59 = i64.wrap_ff x_60
+;; end of compute bucket
+x_61 = x_59
+x_62 =  get_bus_field_size x_54 i64.1
+x_63 = i64.mul x_61 x_62
+x_64 = i64.add x_58 x_63
+;; end of load bucket
+x_50 = x_45
+x_51 = x_64
+x_52 = i64.1
+loop
+i64.if x_52 
+x_53 = get_signal x_50
+set_cmp_input_cnt i64.0 x_51 x_53
+x_50 = i64.add x_50 i64.1
+x_51 = i64.add x_51 i64.1
+x_52 = i64.sub x_52 i64.1
+continue
+end
+break
+end
+x_53 = get_signal x_50
+set_cmp_input_cnt_check i64.0 x_51 x_53
+;; end of store bucket
+;;line 37
+else
+;; branch bucket
+;; compute bucket
+;; load bucket
+;;line 40
+x_66 = ff.load i64.6
+;; end of load bucket
+;; OP(EQ(Single(1)))
+x_65 = ff.eq x_66 ff.1
+;; end of compute bucket
+ff.if x_65
+;;line 41
+;; compute bucket
+;; compute bucket
+;; compute bucket
+;; load bucket
+x_70 = ff.load i64.7
+;; end of load bucket
+;; OP(TO_ADDRESS)
+x_69 = i64.wrap_ff x_70
+;; end of compute bucket
+;; OP(MUL_ADDRESS)
+;;line 0
+x_68 = i64.mul i64.2 x_69
+;; end of compute bucket
+;; OP(ADD_ADDRESS)
+x_67 = i64.add x_68 i64.11
+;; end of compute bucket
+;;line 41
+;; is subcomponent mapped
+x_75 = get_template_id i64.1
+x_76 = get_template_signal_position x_75 i64.1
+x_77 = get_template_signal_type x_75 i64.1
+x_78 =  get_bus_field_position x_77 i64.0
+x_79 = i64.add x_76 x_78
+;; compute bucket
+;; load bucket
+x_81 = ff.load i64.7
+;; end of load bucket
+;; OP(TO_ADDRESS)
+x_80 = i64.wrap_ff x_81
+;; end of compute bucket
+x_82 = x_80
+x_83 =  get_bus_field_size x_75 i64.1
+x_84 = i64.mul x_82 x_83
+x_85 = i64.add x_79 x_84
+;; end of load bucket
+x_71 = x_67
+x_72 = x_85
+x_73 = i64.1
+loop
+i64.if x_73 
+x_74 = get_signal x_71
+set_cmp_input_cnt i64.1 x_72 x_74
+x_71 = i64.add x_71 i64.1
+x_72 = i64.add x_72 i64.1
+x_73 = i64.sub x_73 i64.1
+continue
+end
+break
+end
+x_74 = get_signal x_71
+set_cmp_input_cnt_check i64.1 x_72 x_74
+;; end of store bucket
+;;line 42
+;; compute bucket
+;; compute bucket
+;; compute bucket
+;; compute bucket
+;; load bucket
+x_90 = ff.load i64.7
+;; end of load bucket
+;; OP(TO_ADDRESS)
+x_89 = i64.wrap_ff x_90
+;; end of compute bucket
+;; OP(MUL_ADDRESS)
+;;line 0
+x_88 = i64.mul i64.2 x_89
+;; end of compute bucket
+;; OP(ADD_ADDRESS)
+x_87 = i64.add i64.6 x_88
+;; end of compute bucket
+;; OP(ADD_ADDRESS)
+x_86 = i64.add x_87 i64.11
+;; end of compute bucket
+;;line 42
+;; is subcomponent mapped
+x_95 = get_template_id i64.1
+x_96 = get_template_signal_position x_95 i64.1
+x_97 = get_template_signal_type x_95 i64.1
+x_98 =  get_bus_field_position x_97 i64.1
+x_99 = i64.add x_96 x_98
+;; compute bucket
+;; load bucket
+x_101 = ff.load i64.7
+;; end of load bucket
+;; OP(TO_ADDRESS)
+x_100 = i64.wrap_ff x_101
+;; end of compute bucket
+x_102 = x_100
+x_103 =  get_bus_field_size x_95 i64.1
+x_104 = i64.mul x_102 x_103
+x_105 = i64.add x_99 x_104
+;; end of load bucket
+x_91 = x_86
+x_92 = x_105
+x_93 = i64.1
+loop
+i64.if x_93 
+x_94 = get_signal x_91
+set_cmp_input_cnt i64.1 x_92 x_94
+x_91 = i64.add x_91 i64.1
+x_92 = i64.add x_92 i64.1
+x_93 = i64.sub x_93 i64.1
+continue
+end
+break
+end
+x_94 = get_signal x_91
+set_cmp_input_cnt_check i64.1 x_92 x_94
+;; end of store bucket
+;;line 40
+else
+;;line 44
+;; compute bucket
+;; compute bucket
+;; compute bucket
+;; load bucket
+x_109 = ff.load i64.7
+;; end of load bucket
+;; OP(TO_ADDRESS)
+x_108 = i64.wrap_ff x_109
+;; end of compute bucket
+;; OP(MUL_ADDRESS)
+;;line 0
+x_107 = i64.mul i64.2 x_108
+;; end of compute bucket
+;; OP(ADD_ADDRESS)
+x_106 = i64.add x_107 i64.23
+;; end of compute bucket
+;;line 44
+;; is subcomponent mapped
+x_114 = get_template_id i64.2
+x_115 = get_template_signal_position x_114 i64.1
+x_116 = get_template_signal_type x_114 i64.1
+x_117 =  get_bus_field_position x_116 i64.0
+x_118 = i64.add x_115 x_117
+;; compute bucket
+;; load bucket
+x_120 = ff.load i64.7
+;; end of load bucket
+;; OP(TO_ADDRESS)
+x_119 = i64.wrap_ff x_120
+;; end of compute bucket
+x_121 = x_119
+x_122 =  get_bus_field_size x_114 i64.1
+x_123 = i64.mul x_121 x_122
+x_124 = i64.add x_118 x_123
+;; end of load bucket
+x_110 = x_106
+x_111 = x_124
+x_112 = i64.1
+loop
+i64.if x_112 
+x_113 = get_signal x_110
+set_cmp_input_cnt i64.2 x_111 x_113
+x_110 = i64.add x_110 i64.1
+x_111 = i64.add x_111 i64.1
+x_112 = i64.sub x_112 i64.1
+continue
+end
+break
+end
+x_113 = get_signal x_110
+set_cmp_input_cnt_check i64.2 x_111 x_113
+;; end of store bucket
+;;line 45
+;; compute bucket
+;; compute bucket
+;; compute bucket
+;; compute bucket
+;; load bucket
+x_129 = ff.load i64.7
+;; end of load bucket
+;; OP(TO_ADDRESS)
+x_128 = i64.wrap_ff x_129
+;; end of compute bucket
+;; OP(MUL_ADDRESS)
+;;line 0
+x_127 = i64.mul i64.2 x_128
+;; end of compute bucket
+;; OP(ADD_ADDRESS)
+x_126 = i64.add i64.4 x_127
+;; end of compute bucket
+;; OP(ADD_ADDRESS)
+x_125 = i64.add x_126 i64.23
+;; end of compute bucket
+;;line 45
+;; is subcomponent mapped
+x_134 = get_template_id i64.2
+x_135 = get_template_signal_position x_134 i64.1
+x_136 = get_template_signal_type x_134 i64.1
+x_137 =  get_bus_field_position x_136 i64.1
+x_138 = i64.add x_135 x_137
+;; compute bucket
+;; load bucket
+x_140 = ff.load i64.7
+;; end of load bucket
+;; OP(TO_ADDRESS)
+x_139 = i64.wrap_ff x_140
+;; end of compute bucket
+x_141 = x_139
+x_142 =  get_bus_field_size x_134 i64.1
+x_143 = i64.mul x_141 x_142
+x_144 = i64.add x_138 x_143
+;; end of load bucket
+x_130 = x_125
+x_131 = x_144
+x_132 = i64.1
+loop
+i64.if x_132 
+x_133 = get_signal x_130
+set_cmp_input_cnt i64.2 x_131 x_133
+x_130 = i64.add x_130 i64.1
+x_131 = i64.add x_131 i64.1
+x_132 = i64.sub x_132 i64.1
+continue
+end
+break
+end
+x_133 = get_signal x_130
+set_cmp_input_cnt_check i64.2 x_131 x_133
+;; end of store bucket
+end
+;; end of branch bucket
+end
+;; end of branch bucket
+;;line 36
+;; compute bucket
+;; load bucket
+x_146 = ff.load i64.7
+;; end of load bucket
+;; OP(ADD)
+x_145 = ff.add x_146 ff.1
+;; end of compute bucket
+;; getting dest
+ff.store i64.7 x_145
+;; end of store bucket
+continue
+end
+end
+;; end of loop bucket
+;;line 48
+;; load bucket
+;; is subcomponent mapped
+;; compute bucket
+;; compute bucket
+;; compute bucket
+;; load bucket
+x_150 = ff.load i64.6
+;; end of load bucket
+;; OP(TO_ADDRESS)
+x_149 = i64.wrap_ff x_150
+;; end of compute bucket
+;; OP(MUL_ADDRESS)
+;;line 0
+x_148 = i64.mul i64.1 x_149
+;; end of compute bucket
+;; OP(ADD_ADDRESS)
+x_147 = i64.add x_148 i64.0
+;; end of compute bucket
+x_151 = get_template_id x_147
+x_152 = get_template_signal_position x_151 i64.0
+x_153 = get_template_signal_type x_151 i64.0
+x_154 =  get_bus_field_position x_153 i64.1
+x_155 = i64.add x_152 x_154
+x_156 = i64.0
+x_157 =  get_bus_field_dimension x_153 i64.0 i64.1
+x_158 = i64.mul x_156 x_157
+x_159 = i64.add x_158 i64.1
+x_160 =  get_bus_field_size x_151 i64.0
+x_161 = i64.mul x_159 x_160
+x_162 = i64.add x_155 x_161
+;; end of load bucket
+x_163 = get_cmp_signal x_147 x_162
+;; end of load bucket
+;; getting dest
+;; compute bucket
+;; compute bucket
+;; compute bucket
+;; load bucket
+;;line 48
+x_167 = ff.load i64.6
+;; end of load bucket
+;; OP(TO_ADDRESS)
+x_166 = i64.wrap_ff x_167
+;; end of compute bucket
+;; OP(MUL_ADDRESS)
+;;line 0
+x_165 = i64.mul i64.1 x_166
+;; end of compute bucket
+;; OP(ADD_ADDRESS)
+x_164 = i64.add x_165 i64.0
+;; end of compute bucket
+;;line 48
+set_signal x_164 x_163
+;; end of store bucket
+;;line 34
+;; compute bucket
+;; load bucket
+x_169 = ff.load i64.6
+;; end of load bucket
+;; OP(ADD)
+x_168 = ff.add x_169 ff.1
+;; end of compute bucket
+;; getting dest
+ff.store i64.6 x_168
+;; end of store bucket
+continue
+end
+end
+;; end of loop bucket
+

@@ -1138,7 +1138,7 @@ fn fmt_create_cmp_bucket(
 
 
 fn assert_64() {
-    assert!(cfg!(target_pointer_width = "64"), "Need a fix for non-64-bit architecture.");
+    const { assert!(cfg!(target_pointer_width = "64"), "Need a fix for non-64-bit architecture.") };
 }
 
 fn expression_load(

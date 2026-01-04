@@ -104,7 +104,7 @@ pub fn deserialize_witnesscalc_graph_from_bytes(
         let (input_info, types) = deserialize_input_signal_info(&md.input_signal_info)?;
         InputInfo::V2 { input_info, types }
     } else {
-        panic!("[assertion] no way to be here")
+        unreachable!("magic bytes already validated at start of function")
     };
 
     Ok((outer_nodes, witness_signals, inputs_info))

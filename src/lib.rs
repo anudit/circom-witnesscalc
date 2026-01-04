@@ -222,25 +222,7 @@ fn calc_witness_typed<T: FieldOps, NS: NodesStorage>(
             init_inputs_from_inputs_mapping(&inputs, inputs_mapping)?
         },
         InputInfo::V2{input_info, types} => {
-            let inputs_size = input_info.get_total_size(types)?;
-            let min_offset = input_info.min_offset().unwrap_or(0);
-            let signals_num = min_offset + inputs_size;
-            let mut component = Component::new(0, 0, vec![], inputs_size, signals_num);
-            let inputs_cursor = Cursor::new(inputs.as_bytes());
-            init_signals(inputs_cursor, &nodes.ff, types, input_info, &mut component)?;
-            let mut component_signals = Vec::with_capacity(signals_num);
-            component.write_all_signals(&mut component_signals);
-
-            let mut inputs = Vec::with_capacity(inputs_size + 1);
-            inputs.push(T::one());
-            inputs.extend(
-                component_signals.iter()
-                    .skip(min_offset)
-                    .take(inputs_size)
-                    .map(|x| x.expect(
-                        "[assertion] init_signals func should not allow None input signals")));
-
-            inputs
+            init_inputs_from_v2(inputs, &nodes.ff, input_info, types)?
         }
     };
 
@@ -284,6 +266,33 @@ fn init_inputs_from_inputs_mapping<T: FieldOps>(
     if inputs_filled != inputs_len {
         return Err(anyhow!("Invalid input signal count: {}, expected {}", inputs_filled, inputs_len).into());
     }
+
+    Ok(inputs)
+}
+
+fn init_inputs_from_v2<T: FieldOps>(
+    inputs_json: &str,
+    ff: &Field<T>,
+    input_info: &[vm2::InputInfo],
+    types: &[vm2::Type],
+) -> Result<Vec<T>, Box<dyn std::error::Error>> {
+    let inputs_size = input_info.get_total_size(types)?;
+    let min_offset = input_info.min_offset().unwrap_or(0);
+    let signals_num = min_offset + inputs_size;
+    let mut component = Component::new(0, 0, vec![], inputs_size, signals_num);
+    let inputs_cursor = Cursor::new(inputs_json.as_bytes());
+    init_signals(inputs_cursor, ff, types, input_info, &mut component)?;
+    let mut component_signals = Vec::with_capacity(signals_num);
+    component.write_all_signals(&mut component_signals);
+
+    let mut inputs = Vec::with_capacity(inputs_size + 1);
+    inputs.push(T::one());
+    inputs.extend(
+        component_signals.iter()
+            .skip(min_offset)
+            .take(inputs_size)
+            .map(|x| x.expect(
+                "[assertion] init_signals should not allow None input signals")));
 
     Ok(inputs)
 }

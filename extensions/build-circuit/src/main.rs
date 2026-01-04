@@ -2425,7 +2425,7 @@ fn build_types_list(buses: &[BusInstance]) -> Vec<vm2::Type> {
     types
 }
 
-fn init_input_signals<T: FieldOps + 'static, NS: NodesStorage + 'static>(
+fn setup_input_nodes<T: FieldOps + 'static, NS: NodesStorage + 'static>(
     nodes: &mut Nodes<T, NS>,
     signal_node_idx: &mut [usize],
     inputs_num: usize,
@@ -2843,7 +2843,7 @@ fn build_graph<T: FieldOps + 'static>(
     let mut signal_node_idx: Vec<usize> =
         vec![usize::MAX; circuit.c_producer.total_number_of_signals];
 
-    init_input_signals(
+    setup_input_nodes(
         &mut nodes, &mut signal_node_idx, inputs_size, inputs_offset);
 
     // assert that template id is equal to index in templates list

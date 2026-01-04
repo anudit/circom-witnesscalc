@@ -205,7 +205,7 @@ fn sqrt_mod_prime(a: U256) -> U256 {
     let mut q = M - one;
     let mut s: u32 = 0;
     while q.bitand(one) == zero {
-        q = q >> 1;
+        q >>= 1;
         s += 1;
     }
 
@@ -225,7 +225,7 @@ fn sqrt_mod_prime(a: U256) -> U256 {
 
     let mut z = U256::from(2u64);
     while z.pow_mod((M - one) >> 1, M) == one {
-        z = z + one;
+        z += one;
     }
 
     let mut m = s;

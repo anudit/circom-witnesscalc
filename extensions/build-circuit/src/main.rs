@@ -3,7 +3,7 @@ use compiler::compiler_interface::{run_compiler, Circuit, Config, VCP};
 use compiler::intermediate_representation::ir_interface::{AccessType, AddressType, BranchBucket, ComputeBucket, CreateCmpBucket, FinalData, InputInformation, Instruction, InstructionPointer, LoadBucket, LocationRule, ObtainMeta, OperatorType, ReturnBucket, ReturnType, SizeOption, StatusInput, StoreBucket, ValueBucket, ValueType};
 use constraint_generation::{build_circuit, BuildConfig};
 use program_structure::error_definition::Report;
-use std::collections::{HashMap, BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::{env, fmt, fs};
 use std::error::Error;
 use std::path::{Path, PathBuf};
@@ -17,10 +17,14 @@ use indicatif::ProgressBar;
 use ruint::aliases::U256;
 use type_analysis::check_types::check_types;
 use program_structure::constants::UsefulConstants;
-use circom_witnesscalc::{progress_bar, InputSignalsInfo};
+use circom_witnesscalc::{progress_bar, vm2};
 use circom_witnesscalc::field::{Field, FieldOperations, FieldOps, U254, U64};
 use circom_witnesscalc::graph::{Node, Operation, UnoOperation, TresOperation, Nodes, NodeConstErr, NodeIdx, NodesInterface, optimize, MMapNodes, NodesStorage};
 use circom_witnesscalc::storage::serialize_witnesscalc_graph;
+use compiler::hir::very_concrete_program::{BusInstance, FieldInfo};
+use program_structure::ast::SignalType;
+use circom_witnesscalc::vm2::{TypeField, TypeFieldKind};
+use circom_witnesscalc::vm2::InputInfoSliceExt;
 
 fn try_into_operation(op: OperatorType) -> Result<Operation, String> {
     match op {
@@ -2397,28 +2401,46 @@ fn get_constants<T: FieldOps>(
     Ok(constants)
 }
 
-fn init_input_signals<T: FieldOps + 'static, NS: NodesStorage + 'static>(
-    circuit: &Circuit,
-    nodes: &mut Nodes<T, NS>,
-    signal_node_idx: &mut [usize],
-) -> InputSignalsInfo {
+fn build_types_list(buses: &[BusInstance]) -> Vec<vm2::Type> {
+    let mut types: Vec<vm2::Type> = Vec::new();
 
-    let input_list = circuit.c_producer.get_main_input_list();
-    let mut signal_values: Vec<T> = Vec::new();
-    signal_values.push(T::one());
-    signal_node_idx[0] = nodes.push(Node::Input(signal_values.len() - 1)).0;
-    let mut inputs_info = HashMap::new();
-
-    for input in input_list {
-        inputs_info.insert(input.name.clone(), (signal_values.len(), input.size));
-        for i in 0..input.size {
-            signal_values.push(T::zero());
-            signal_node_idx[input.start + i] = nodes.push(
-                Node::Input(signal_values.len() - 1)).0;
-        }
+    for (idx, b) in buses.iter().enumerate() {
+        let mut bus_fields: Vec<(&String, &FieldInfo)> = b.fields.iter()
+            .map(|(k, v)| (k, v)).collect();
+        // sort fields by field ID
+        bus_fields.sort_by_key(|x| x.1.field_id);
+        let fields: Vec<TypeField> = bus_fields.into_iter().map(|(field_name, field)| TypeField {
+            name: field_name.clone(),
+            kind: match field.bus_id {
+                None => TypeFieldKind::Ff,
+                Some(id) => TypeFieldKind::Bus(id),
+            },
+            offset: field.offset,
+            base_type_size: field.size / field.dimensions.iter().product::<usize>(),
+            dims: field.dimensions.clone(),
+        }).collect();
+        types.push(vm2::Type{ name: format!("{}_{}", b.name.clone(), idx), fields });
     }
 
-    inputs_info
+    types
+}
+
+fn init_input_signals<T: FieldOps + 'static, NS: NodesStorage + 'static>(
+    nodes: &mut Nodes<T, NS>,
+    signal_node_idx: &mut [usize],
+    inputs_num: usize,
+    inputs_offset: usize,
+) {
+
+    let mut signal_values: Vec<T> = Vec::with_capacity(inputs_num + 1);
+    signal_values.push(T::one());
+    signal_node_idx[0] = nodes.push(Node::Input(signal_values.len() - 1)).0;
+
+    for i in inputs_offset..inputs_offset+inputs_num {
+        signal_values.push(T::zero());
+        signal_node_idx[i] = nodes.push(
+            Node::Input(signal_values.len() - 1)).0;
+    }
 }
 
 fn run_template<T: FieldOps + 'static, NS: NodesStorage + 'static>(
@@ -2795,13 +2817,34 @@ fn build_graph<T: FieldOps + 'static>(
         nodes.nodes.len(), constants.len(),
         "duplicate constant found in circuit");
 
-    // The node indexes for each signal. For example in
+    let types = build_types_list(&vcp.buses);
+
+    let mut input_infos = vec![];
+    for w in &circuit.templates[vcp.main_id].wires {
+        if w.xtype() != SignalType::Input {
+            continue;
+        }
+        input_infos.push(vm2::InputInfo{
+            name: w.name().clone(),
+            offset: w.dag_local_id(),
+            lengths: w.lengths().clone(),
+            type_id: match w.bus_id() {
+                None => None,
+                Some(id) => Some(types[id].name.clone()),
+            },
+        });
+    }
+
+    let inputs_size = (&input_infos).get_total_size(&types).unwrap();
+    let inputs_offset = input_infos.min_offset().unwrap_or(0);
+
+    // The node indexes for each signal. For example, in
     // signal_node_idx[3] stored the node index for signal 3.
     let mut signal_node_idx: Vec<usize> =
         vec![usize::MAX; circuit.c_producer.total_number_of_signals];
 
-    let input_signals: InputSignalsInfo = init_input_signals(
-        circuit, &mut nodes, &mut signal_node_idx);
+    init_input_signals(
+        &mut nodes, &mut signal_node_idx, inputs_size, inputs_offset);
 
     // assert that template id is equal to index in templates list
     for (i, t) in circuit.templates.iter().enumerate() {
@@ -2851,95 +2894,16 @@ fn build_graph<T: FieldOps + 'static>(
         witness_node_idxes.push(node_idx);
     }
 
-    let debug_signals = [
-        ("alias_in0", 261usize),
-        ("alias_in1", 262usize),
-        ("alias_in3", 264usize),
-        ("n2bX", 2066usize),
-        ("alias_cmp", 263usize),
-    ];
-    if args.print_debug {
-        println!("debug signals before optimize:");
-        for (name, idx) in debug_signals.iter() {
-            let idx = *idx;
-            let node_idx = signal_node_idx[idx];
-            if let Some(pos) = witness_list.iter().position(|s| *s == idx) {
-                println!(
-                    "  {} (#{}): signal node {}, witness node {}",
-                    name, idx, node_idx, witness_node_idxes[pos]);
-            } else {
-                println!(
-                    "  {} (#{}): signal node {}, not in witness list",
-                    name, idx, node_idx);
-            }
-        }
-    }
-
     println!("number of nodes {}, signals {}", nodes.len(), witness_node_idxes.len());
 
     optimize(&mut nodes, &mut witness_node_idxes);
-
-    if args.print_debug {
-        println!("debug signals after optimize:");
-        for (name, idx) in debug_signals.iter() {
-            let idx = *idx;
-            if let Some(pos) = witness_list.iter().position(|s| *s == idx) {
-                let node_idx = witness_node_idxes[pos];
-                let node_info = match nodes.nodes.get(node_idx).unwrap() {
-                    Node::Unknown => "Unknown".to_string(),
-                    Node::Input(i) => format!("Input({})", i),
-                    Node::Constant(i) => format!("Constant({})", i),
-                    Node::UnoOp(op, a) => format!("UnoOp({:?}, {})", op, a),
-                    Node::Op(op, a, b) => format!("Op({:?}, {}, {})", op, a, b),
-                    Node::TresOp(op, a, b, c) => {
-                        format!("TresOp({:?}, {}, {}, {})", op, a, b, c)
-                    }
-                };
-                println!(
-                    "  {} (#{}): witness node {} => {}",
-                    name, idx, node_idx, node_info);
-                if name.starts_with("alias_in") || *name == "alias_cmp" {
-                    if let Node::Op(op, a, b) = nodes.nodes.get(node_idx).unwrap() {
-                        let child_info = |child_idx: usize| match nodes.nodes.get(child_idx).unwrap() {
-                            Node::Unknown => "Unknown".to_string(),
-                            Node::Input(i) => format!("Input({})", i),
-                            Node::Constant(i) => format!("Constant({})", i),
-                            Node::UnoOp(op, a) => format!("UnoOp({:?}, {})", op, a),
-                            Node::Op(op, a, b) => format!("Op({:?}, {}, {})", op, a, b),
-                            Node::TresOp(op, a, b, c) => format!("TresOp({:?}, {}, {}, {})", op, a, b, c),
-                        };
-                        println!(
-                            "    child A ({}): {}",
-                            a, child_info(a));
-                        println!(
-                            "    child B ({}): {}",
-                            b, child_info(b));
-                        if matches!(op, Operation::Band) {
-                            if let Node::Op(Operation::Shr, base, shift) = nodes.nodes.get(a).unwrap() {
-                                println!(
-                                    "    base node ({}): {}",
-                                    base, child_info(base));
-                                println!(
-                                    "    shift node ({}): {}",
-                                    shift, child_info(shift));
-                            }
-                        }
-                    }
-                }
-            } else {
-                println!(
-                    "  {} (#{}): not in witness list",
-                    name, idx);
-            }
-        }
-    }
 
     println!(
         "number of nodes after optimize {}, signals {}",
         nodes.len(), witness_node_idxes.len());
 
     let f = fs::File::create(&args.graph_file).unwrap();
-    serialize_witnesscalc_graph(f, &nodes, &witness_node_idxes, &input_signals).unwrap();
+    serialize_witnesscalc_graph(f, &nodes, &witness_node_idxes, &input_infos, &types).unwrap();
 
     println!("circuit graph saved to file: {}", &args.graph_file);
 }

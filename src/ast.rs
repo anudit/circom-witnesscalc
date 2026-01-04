@@ -231,8 +231,8 @@ impl Template {
                     let base_size = type_def.get_total_size();
                     if dims.is_empty() { base_size } else { base_size * dims.iter().product::<usize>() }
                 } else {
-                    // If type not found, return 0 (this shouldn't happen in valid code)
-                    0
+                    // TODO make function return Result
+                    panic!()
                 }
             }
         }

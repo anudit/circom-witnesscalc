@@ -22,8 +22,10 @@ where
         };
     }
 
+    // TODO [begin] remove duplications with InputInfoSliceExt
     let first_offset = input_infos.first().unwrap().offset;
     let total_inputs = calculate_total_input_signals(input_infos, types);
+    // TODO [end]
     let mut signals_set = vec![false; total_inputs];
 
     for (path, value) in input_signals.iter() {
@@ -35,7 +37,7 @@ where
             return Err(format!("duplicate signal at path {}", path).into());
         }
         signals_set[local_idx] = true;
-        component.set_signal(signal_idx - 1, *value).map_err(|e| -> Box<dyn Error> { e })?;
+        component.set_signal(signal_idx, *value).map_err(|e| -> Box<dyn Error> { e })?;
     }
 
     // Check if any input signals were not provided

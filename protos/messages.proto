@@ -87,4 +87,5 @@ message GraphMetadata {
   map<string, SignalDescription> inputs = 2;
   BigUInt prime = 3;
   string prime_str = 4;
+  bytes input_signal_info = 5;
 }

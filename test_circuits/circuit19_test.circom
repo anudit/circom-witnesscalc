@@ -1,4 +1,4 @@
-//witnesscalc:enabled !graph
+//witnesscalc:enabled !graph !graph_v1
 pragma circom  2.1.6;
 
 template Main() {

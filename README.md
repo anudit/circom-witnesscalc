@@ -86,6 +86,27 @@ Now run the `test_circuits.sh` script.
 ./test_circuits.sh
 ```
 
+### Testing backward compatibility with graph_v1
+
+To verify that circuits work with the older graph format (v1), you need to test
+against the `build-circuit` from version v0.1.1.
+
+1. Clone and build the v0.1.1 version:
+
+```shell
+git clone --branch build-circuit/v0.1.1 https://github.com/iden3/circom-witnesscalc.git ~/src/circom-witnesscalc-build-circuit-v0.1.1
+cd ~/src/circom-witnesscalc-build-circuit-v0.1.1
+cargo build --release -p build-circuit
+```
+
+2. Run tests with the old build-circuit and the `graph_v1` tag:
+
+```shell
+./test_circuits.sh -b ~/src/circom-witnesscalc-build-circuit-v0.1.1/target/release/build-circuit -t graph_v1
+```
+
+Circuits not compatible with graph_v1 (tagged with `!graph_v1`) will be skipped.
+
 ## Build for iOS & iOS Simulator
 
 ```shell

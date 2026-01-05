@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::sync::{Arc, RwLock};
 use crate::field::{FieldOperations, FieldOps};
-use crate::vm2::{Component, InputInfo, Template, Type, TypeFieldKind};
+use crate::vm2::{Component, InputInfo, InputInfoSliceExt, Template, Type, TypeFieldKind};
 
 /// Initialize signals array with input values from JSON
 pub fn init_signals<T: FieldOps, F>(
@@ -22,10 +22,8 @@ where
         };
     }
 
-    // TODO [begin] remove duplications with InputInfoSliceExt
-    let first_offset = input_infos.first().unwrap().offset;
-    let total_inputs = calculate_total_input_signals(input_infos, types);
-    // TODO [end]
+    let first_offset = input_infos.min_offset().unwrap();
+    let total_inputs = input_infos.get_total_size(types)?;
     let mut signals_set = vec![false; total_inputs];
 
     for (path, value) in input_signals.iter() {
@@ -46,30 +44,6 @@ where
     }
 
     Ok(())
-}
-
-/// Calculate total number of input signals
-fn calculate_total_input_signals(input_infos: &[InputInfo], types: &[Type]) -> usize {
-    input_infos.iter()
-        .map(|info| calculate_input_info_size(info, types))
-        .sum()
-}
-
-/// Calculate the size of a single InputInfo (number of signals it occupies)
-fn calculate_input_info_size(info: &InputInfo, types: &[Type]) -> usize {
-    let base_size = match &info.type_id {
-        Some(type_id) => {
-            let bus_type = types.iter().find(|t| &t.name == type_id).unwrap();
-            calculate_bus_total_size(bus_type, types)
-        }
-        None => 1,
-    };
-
-    if info.lengths.is_empty() {
-        base_size
-    } else {
-        base_size * info.lengths.iter().product::<usize>()
-    }
 }
 
 /// Convert a JSON path to signal index

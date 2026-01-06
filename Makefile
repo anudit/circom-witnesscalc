@@ -13,22 +13,35 @@ lib-ios-sim:
 
 lib-android: lib-android-aarch64 lib-android-x86_64
 
-lib-android-aarch64:
-	export CC=${ANDROID_NDK}/toolchains/llvm/prebuilt/darwin-x86_64/bin/aarch64-linux-android34-clang; \
+ANDROID_TOOLCHAIN = ${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/darwin-x86_64/bin
+
+check-android-ndk:
+ifndef ANDROID_NDK_ROOT
+	$(error ANDROID_NDK_ROOT is not set. Please set it to your Android NDK path, e.g.: export ANDROID_NDK_ROOT=~/Library/Android/sdk/ndk/<version>)
+endif
+	@if [ ! -d "$(ANDROID_TOOLCHAIN)" ]; then \
+		echo "Error: Android NDK toolchain not found at $(ANDROID_TOOLCHAIN)"; \
+		echo "Please verify ANDROID_NDK_ROOT points to a valid NDK installation."; \
+		echo "Current ANDROID_NDK_ROOT: $(ANDROID_NDK_ROOT)"; \
+		exit 1; \
+	fi
+
+lib-android-aarch64: check-android-ndk
+	export CC=$(ANDROID_TOOLCHAIN)/aarch64-linux-android34-clang; \
 	export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$$CC; \
 	export CLANG_PATH=$$CC; \
 	export RUSTFLAGS="-C link-arg=-Wl,-z,max-page-size=0x4000"; \
 	cargo build --target aarch64-linux-android --release
 
-lib-android-x86_64:
-	export CC=${ANDROID_NDK}/toolchains/llvm/prebuilt/darwin-x86_64/bin/x86_64-linux-android34-clang; \
+lib-android-x86_64: check-android-ndk
+	export CC=$(ANDROID_TOOLCHAIN)/x86_64-linux-android34-clang; \
 	export CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER=$$CC; \
 	export CLANG_PATH=$$CC; \
 	export RUSTFLAGS="-C link-arg=-Wl,-z,max-page-size=0x4000"; \
 	cargo build --target x86_64-linux-android --release
 
 lib-macos:
-	cargo build --target aarch64-apple-darwin --release
+	cargo build --workspace --target aarch64-apple-darwin --release
 
 copy-libs:
 	mkdir -p \

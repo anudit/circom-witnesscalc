@@ -16,6 +16,40 @@ pub struct InputInfo {
     pub type_id: Option<String>,
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("unknown type error")]
+pub struct UnknownTypeName();
+
+pub trait InputInfoSliceExt {
+    fn get_total_size(&self, types: &[Type]) -> Result<usize, UnknownTypeName>;
+    fn min_offset(&self) -> Option<usize>;
+}
+
+impl InputInfoSliceExt for [InputInfo] {
+    fn get_total_size(&self, types: &[Type]) -> Result<usize, UnknownTypeName> {
+        let mut total_size = 0usize;
+        for i in self {
+            let base_type_size: usize = match &i.type_id {
+                None => 1,
+                Some(type_id) => {
+                    match types.iter().find(|x| &x.name == type_id) {
+                        None => { return Err(UnknownTypeName()); }
+                        Some(t) => t.get_total_size()
+                    }
+                }
+            };
+
+            total_size += i.lengths.iter().product::<usize>()
+                * base_type_size;
+        }
+        Ok(total_size)
+    }
+
+    fn min_offset(&self) -> Option<usize> {
+        self.iter().map(|i| i.offset).min()
+    }
+}
+
 #[repr(u8)]
 #[derive(Debug)]
 pub enum OpCode {
@@ -3079,6 +3113,7 @@ where
 }
 
 #[derive(Debug, Clone)]
+#[cfg_attr(test, derive(PartialEq))]
 pub struct Type {
     pub name: String,
     pub fields: Vec<TypeField>,
@@ -3091,6 +3126,7 @@ impl Type {
 }
 
 #[derive(Debug, Clone)]
+#[cfg_attr(test, derive(PartialEq))]
 pub struct TypeField {
     pub name: String,
     pub kind: TypeFieldKind,
@@ -3111,6 +3147,7 @@ impl TypeField {
 }
 
 #[derive(Debug, Clone)]
+#[cfg_attr(test, derive(PartialEq))]
 pub enum TypeFieldKind {
     Ff,
     Bus(usize), // Index into the types vector

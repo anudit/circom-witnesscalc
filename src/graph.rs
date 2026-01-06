@@ -172,6 +172,7 @@ pub enum UnoOperation {
     Id, // identity - just return self
     Lnot,
     Bnot,
+    Sqrt,
 }
 
 impl UnoOperation {
@@ -190,7 +191,73 @@ impl UnoOperation {
                 let a = a & mask;
                 if a >= M { a - M } else { a }
             },
+            UnoOperation::Sqrt => sqrt_mod_prime(a),
         }
+    }
+}
+
+fn sqrt_mod_prime(a: U256) -> U256 {
+    if a == U256::ZERO {
+        return U256::ZERO;
+    }
+    let one = U256::from(1u64);
+    let zero = U256::ZERO;
+    let mut q = M - one;
+    let mut s: u32 = 0;
+    while q.bitand(one) == zero {
+        q >>= 1;
+        s += 1;
+    }
+
+    let legendre = a.pow_mod((M - one) >> 1, M);
+    if legendre != one {
+        return zero;
+    }
+
+    if s == 1 {
+        let exp = (q + one) >> 1;
+        let mut r = a.pow_mod(exp, M);
+        if r > (M >> 1) {
+            r = M - r;
+        }
+        return r;
+    }
+
+    let mut z = U256::from(2u64);
+    while z.pow_mod((M - one) >> 1, M) == one {
+        z += one;
+    }
+
+    let mut m = s;
+    let mut c = z.pow_mod(q, M);
+    let mut t = a.pow_mod(q, M);
+    let mut r = a.pow_mod((q + one) >> 1, M);
+
+    while t != one {
+        let mut t2i = t;
+        let mut i: u32 = 0;
+        while t2i != one {
+            t2i = t2i.mul_mod(t2i, M);
+            i += 1;
+            if i == m {
+                return zero;
+            }
+        }
+
+        let mut b = c;
+        for _ in 0..(m - i - 1) {
+            b = b.mul_mod(b, M);
+        }
+        c = b.mul_mod(b, M);
+        t = t.mul_mod(c, M);
+        r = r.mul_mod(b, M);
+        m = i;
+    }
+
+    if r > (M >> 1) {
+        M - r
+    } else {
+        r
     }
 }
 
@@ -201,6 +268,7 @@ impl From<&UnoOperation> for crate::proto::UnoOp {
             UnoOperation::Id => crate::proto::UnoOp::Id,
             UnoOperation::Lnot => crate::proto::UnoOp::Lnot,
             UnoOperation::Bnot => crate::proto::UnoOp::Bnot,
+            UnoOperation::Sqrt => crate::proto::UnoOp::Sqrt,
         }
     }
 }
@@ -213,6 +281,7 @@ impl TryFrom<u8> for UnoOperation {
             1 => Ok(UnoOperation::Id),
             2 => Ok(UnoOperation::Lnot),
             3 => Ok(UnoOperation::Bnot),
+            4 => Ok(UnoOperation::Sqrt),
             _ => Err(format!("Invalid unary operation: {}", op)),
         }
     }
@@ -225,6 +294,7 @@ impl From<&UnoOperation> for u8 {
             UnoOperation::Id => 1,
             UnoOperation::Lnot => 2,
             UnoOperation::Bnot => 3,
+            UnoOperation::Sqrt => 4,
         }
     }
 }

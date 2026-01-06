@@ -9,7 +9,7 @@ ptau_url="https://storage.googleapis.com/zkevm/ptau/powersOfTau28_hez_final_18.p
 
 required_commands=(circom snarkjs curl cargo node cmp)
 
-VM_TAG="graph"
+TEST_TAG="graph"
 
 for cmd in "${required_commands[@]}"; do
 	if ! command -v "$cmd" &>/dev/null; then
@@ -28,12 +28,14 @@ fi
 ptau_path="${workdir}/$(basename $ptau_url)"
 
 print_usage() {
-	echo "Usage: $0 [-p <ptau_file_path>] [-h] [-l <inlcude_path>] [file1 ...]"
+	echo "Usage: $0 [-p <ptau_file_path>] [-b <build_circuit_path>] [-t <tag>] [-h] [-l <inlcude_path>] [file1 ...]"
 	echo
 	echo "Options:"
 	echo "  -p <ptau_file_path>    Path to ptau file (if provided multiple times, last one is used)"
 	echo "                         If omitted, the default file will be downloaded from:"
 	echo "                         ${ptau_url}"
+	echo "  -b <build_circuit>     Path to build-circuit binary (default: target/release/build-circuit)"
+	echo "  -t <tag>               Test tag for filtering circuits (default: graph)"
 	echo "  -l <include_path>      Path to include directory. Can be specified multiple times"
 	echo "  -h                     Print this usage and exit"
 	echo
@@ -45,8 +47,9 @@ print_usage() {
 }
 
 declare -a library_paths=()
+build_circuit_path=""
 
-while getopts ":p:l:h" opt; do
+while getopts ":p:l:b:t:h" opt; do
 	case $opt in
 	h)
 		print_usage
@@ -54,6 +57,12 @@ while getopts ":p:l:h" opt; do
 		;;
 	p)
 		ptau_path="$OPTARG"
+		;;
+	b)
+		build_circuit_path="$OPTARG"
+		;;
+	t)
+		TEST_TAG="$OPTARG"
 		;;
 	l)
 		library_paths+=("$OPTARG")
@@ -72,6 +81,11 @@ done
 # Shift past the named options to access positional arguments
 shift $((OPTIND - 1))
 
+if [ -z "$TEST_TAG" ]; then
+	echo "Error: test tag cannot be empty" >&2
+	exit 1
+fi
+
 if [ ! -f "$ptau_path" ]; then
 	echo "Downloading $ptau_url to $ptau_path"
 	curl -L "$ptau_url" -o "$ptau_path"
@@ -79,6 +93,10 @@ fi
 
 if [ ${#library_paths[@]} -eq 0 ]; then
 	library_paths+=("${script_dir}/test_deps/circomlib/circuits")
+fi
+
+if [ -z "$build_circuit_path" ]; then
+	build_circuit_path="${script_dir}/target/release/build-circuit"
 fi
 
 declare -a include_args
@@ -115,7 +133,7 @@ function test_circuit() {
 
 	# run commands from the project directory
 	pushd "${script_dir}" >/dev/null
-	time target/release/build-circuit "$circuit_path" "$circuit_graph_path" "${include_args[@]}"
+	time "$build_circuit_path" "$circuit_path" "$circuit_graph_path" "${include_args[@]}"
 	time target/release/calc-witness "$circuit_graph_path" "$inputs_path" "$witness_path"
 	popd >/dev/null
 
@@ -172,8 +190,8 @@ else
 	for circuit_path in "${script_dir}"/test_circuits/*.circom; do
 		circuit_path=$(realpath "$circuit_path")
 
-		if ! circuit_is_enabled "$circuit_path" "${VM_TAG}"; then
-			echo -e "${YELLOW}Skipped $circuit_path (not enabled for ${VM_TAG})${NC}"
+		if ! circuit_is_enabled "$circuit_path" "${TEST_TAG}"; then
+			echo -e "${YELLOW}Skipped $circuit_path (not enabled for ${TEST_TAG})${NC}"
 			continue
 		fi
 

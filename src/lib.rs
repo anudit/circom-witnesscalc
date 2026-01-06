@@ -14,6 +14,7 @@ pub mod parser;
 
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void, CStr};
+use std::io::Cursor;
 use std::slice::from_raw_parts;
 use anyhow::anyhow;
 use ruint::aliases::U256;
@@ -24,9 +25,10 @@ use ark_bn254::Fr;
 use ark_ff::{BigInteger, PrimeField};
 use indicatif::{ProgressBar, ProgressStyle};
 use crate::field::{bn254_prime, Field, FieldOperations, FieldOps, U254, U64};
-use crate::storage::proto_deserializer::deserialize_witnesscalc_graph_from_bytes;
-use crate::storage::{deserialize_witnesscalc_vm2_body, read_witnesscalc_vm2_header, WITNESSCALC_CVM_MAGIC, WITNESSCALC_GRAPH_MAGIC};
-use crate::vm2::{execute, Circuit};
+use crate::storage::proto_deserializer::{deserialize_witnesscalc_graph_from_bytes, InputInfo};
+use crate::storage::{deserialize_witnesscalc_vm2_body, read_witnesscalc_vm2_header, WITNESSCALC_CVM_MAGIC, WITNESSCALC_GRAPH_MAGIC_002, WITNESSCALC_GRAPH_MAGIC_001};
+use crate::vm2::{execute, Circuit, Component};
+use crate::vm2::InputInfoSliceExt;
 use crate::vm2_setup::{build_component_tree, init_signals};
 
 pub type InputSignalsInfo = HashMap<String, (usize, usize)>;
@@ -163,7 +165,8 @@ pub fn wtns_from_witness2<const FS: usize, T: FieldOps>(
 pub fn calc_witness(
     inputs: &str,
     wcd_data: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    if wcd_data.starts_with(WITNESSCALC_GRAPH_MAGIC) {
+    if wcd_data.starts_with(WITNESSCALC_GRAPH_MAGIC_002) ||
+        wcd_data.starts_with(WITNESSCALC_GRAPH_MAGIC_001) {
         calc_witness_graph(inputs, wcd_data)
     } else if wcd_data.starts_with(WITNESSCALC_CVM_MAGIC) {
         calc_witness_vm2_buf(wcd_data, inputs)
@@ -177,11 +180,7 @@ fn calc_witness_graph(
     graph_data: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
 
     let start = std::time::Instant::now();
-    // let inputs = deserialize_inputs(inputs.as_bytes())?;
-    println!("Inputs loaded in {:?}", start.elapsed());
-
-    let start = std::time::Instant::now();
-    let (nodes, signals, input_mapping): (Box<dyn NodesInterface>, Vec<usize>, InputSignalsInfo) =
+    let (nodes, signals, input_info): (Box<dyn NodesInterface>, Vec<usize>, InputInfo) =
         deserialize_witnesscalc_graph_from_bytes(graph_data).unwrap();
     println!("Graph loaded in {:?}", start.elapsed());
 
@@ -191,14 +190,16 @@ fn calc_witness_graph(
     println!("Inputs populated in {:?}", start.elapsed());
 
     if let Some(nodes) = nodes.as_any().downcast_ref::<Nodes<U254, VecNodes>>() {
-        let result = calc_witness_typed(nodes, inputs, &input_mapping, &signals)?;
+        let result = calc_witness_typed(
+            nodes, inputs, &signals, &input_info)?;
         let vec_witness: Vec<FieldElement<32>> = result
             .iter()
             .map(|a| TryInto::<[u8; 32]>::try_into(a.as_le_slice()).unwrap().into())
             .collect();
         Ok(wtns_from_witness2(vec_witness, nodes.prime()))
     } else if let Some(nodes) = nodes.as_any().downcast_ref::<Nodes<U64, VecNodes>>() {
-        let result = calc_witness_typed(nodes, inputs, &input_mapping, &signals)?;
+        let result = calc_witness_typed(
+            nodes, inputs, &signals, &input_info)?;
         let vec_witness: Vec<FieldElement<8>> = result
             .iter()
             .map(|a| TryInto::<[u8; 8]>::try_into(a.as_le_slice()).unwrap().into())
@@ -210,41 +211,89 @@ fn calc_witness_graph(
 }
 
 fn calc_witness_typed<T: FieldOps, NS: NodesStorage>(
-    nodes: &Nodes<T, NS>, inputs: &str, input_mapping: &InputSignalsInfo,
-    signals: &[usize]) -> Result<Vec<T>, Box<dyn std::error::Error>> {
+    nodes: &Nodes<T, NS>, inputs: &str, signals: &[usize],
+    inputs_info: &InputInfo) -> Result<Vec<T>, Box<dyn std::error::Error>> {
 
-    let inputs = deserialize_inputs2(
-        inputs.as_bytes(), &nodes.ff)?;
-    let inputs = create_inputs(&inputs, input_mapping)?;
+    let inputs = match inputs_info {
+        InputInfo::V1(inputs_mapping) => {
+            // flatten inputs as flat arrays
+            let inputs = deserialize_and_flatten_inputs(
+                inputs.as_bytes(), &nodes.ff)?;
+            init_inputs_from_inputs_mapping(&inputs, inputs_mapping)?
+        },
+        InputInfo::V2{input_info, types} => {
+            init_inputs_from_v2(inputs, &nodes.ff, input_info, types)?
+        }
+    };
+
     let result = evaluate(
-        &nodes.ff, &nodes.nodes, &inputs, signals,
-        &nodes.constants);
+        &nodes.ff, &nodes.nodes, &inputs, signals, &nodes.constants);
+
     Ok(result)
 }
 
-fn create_inputs<T: FieldOps>(
+fn init_inputs_from_inputs_mapping<T: FieldOps>(
     input_list: &HashMap<String, Vec<T>>,
     inputs_info: &InputSignalsInfo) -> Result<Vec<T>, Box<dyn std::error::Error>> {
 
-    let mut max_idx: usize = 0;
+    let mut inputs_len: usize = 1;
     for (offset, len) in inputs_info.values() {
         let idx = offset + len;
-        if idx > max_idx {
-            max_idx = idx;
+        if idx > inputs_len {
+            inputs_len = idx;
         }
     }
-    let mut inputs = vec![T::zero(); max_idx + 1];
+    let mut inputs = vec![T::zero(); inputs_len];
     inputs[0] = T::one();
+    let mut inputs_filled = 1;
     for (key, value) in input_list {
-        let (offset, len) = inputs_info[key];
-        if len != value.len() {
-            return Err(anyhow!("Invalid input length for {}", key).into());
-        }
-
-        for (i, v) in value.iter().enumerate() {
-            inputs[offset + i] = *v;
+        match inputs_info.get(key) {
+            None => {
+                return Err(anyhow!("Invalid input signal name for the circuit: {}", key).into());
+            }
+            Some(&(offset, len)) => {
+                if len != value.len() {
+                    return Err(anyhow!("Invalid input signal {} length: {}", key, len).into());
+                }
+                for (i, v) in value.iter().enumerate() {
+                    inputs[offset + i] = *v;
+                    inputs_filled += 1;
+                }
+            }
         }
     };
+
+    if inputs_filled != inputs_len {
+        return Err(anyhow!("Invalid input signal count: {}, expected {}", inputs_filled, inputs_len).into());
+    }
+
+    Ok(inputs)
+}
+
+fn init_inputs_from_v2<T: FieldOps>(
+    inputs_json: &str,
+    ff: &Field<T>,
+    input_info: &[vm2::InputInfo],
+    types: &[vm2::Type],
+) -> Result<Vec<T>, Box<dyn std::error::Error>> {
+    let inputs_size = input_info.get_total_size(types)?;
+    let min_offset = input_info.min_offset().unwrap_or(0);
+    let signals_num = min_offset + inputs_size;
+    let mut component = Component::new(0, 0, vec![], inputs_size, signals_num);
+    let inputs_cursor = Cursor::new(inputs_json.as_bytes());
+    init_signals(inputs_cursor, ff, types, input_info, &mut component)?;
+    let mut component_signals = Vec::with_capacity(signals_num);
+    component.write_all_signals(&mut component_signals);
+
+    let mut inputs = Vec::with_capacity(inputs_size + 1);
+    inputs.push(T::one());
+    inputs.extend(
+        component_signals.iter()
+            .skip(min_offset)
+            .take(inputs_size)
+            .map(|x| x.expect(
+                "[assertion] init_signals should not allow None input signals")));
+
     Ok(inputs)
 }
 
@@ -260,79 +309,90 @@ impl From<ParseError> for Error {
     }
 }
 
-fn calc_len(vs: &Vec<serde_json::Value>) -> usize {
-    let mut len = vs.len();
-
-    for v in vs {
-        if let serde_json::Value::Array(arr) = v {
-            len += calc_len(arr)-1;
-        }
+fn calc_value_len(v: &serde_json::Value) -> usize {
+    match v {
+        serde_json::Value::Array(arr) => arr.iter().map(calc_value_len).sum(),
+        serde_json::Value::Object(map) => map.values().map(calc_value_len).sum(),
+        _ => 1,
     }
-
-    len
 }
 
-fn flatten_array(
-    key: &str, vs: &Vec<serde_json::Value>) -> Result<Vec<U256>, Error> {
-
-    let mut vals: Vec<U256> = Vec::with_capacity(calc_len(vs));
-
-    for v in vs {
-        match v {
-            serde_json::Value::String(s) => {
-                vals.push(U256::from_str_radix(s.as_str(),10)?);
-            }
-            serde_json::Value::Number(n) => {
-                vals.push(U256::from(
-                    n.as_u64()
-                        .ok_or(Error::InputsUnmarshal(format!(
-                            "signal value is not a positive integer: {}",
-                            key).to_string()))?));
-            }
-            serde_json::Value::Array(arr) => {
-                vals.extend_from_slice(flatten_array(key, arr)?.as_slice());
-            }
-            _ => {
-                return Err(Error::InputsUnmarshal(
-                    format!("inputs must be a string: {}", key).to_string()));
-            }
-        };
-
-    }
-    Ok(vals)
-}
-
-fn flatten_array2<T: FieldOps>(
+fn flatten_value(
     key: &str,
-    vs: &Vec<serde_json::Value>,
-    ff: &Field<T>) -> Result<Vec<T>, Box<dyn std::error::Error>> {
+    v: &serde_json::Value,
+    vals: &mut Vec<U256>) -> Result<(), Error> {
 
-    let mut vals: Vec<T> = Vec::with_capacity(calc_len(vs));
+    match v {
+        serde_json::Value::String(s) => {
+            vals.push(U256::from_str_radix(s.as_str(),10)?);
+        }
+        serde_json::Value::Number(n) => {
+            vals.push(U256::from(
+                n.as_u64()
+                    .ok_or(Error::InputsUnmarshal(format!(
+                        "signal value is not a positive integer: {}",
+                        key).to_string()))?));
+        }
+        serde_json::Value::Array(arr) => {
+            for (idx, nested) in arr.iter().enumerate() {
+                let nested_key = format!("{}[{}]", key, idx);
+                flatten_value(&nested_key, nested, vals)?;
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for (nested_key, nested_val) in map.iter() {
+                let nested_path = if key.is_empty() {
+                    nested_key.to_string()
+                } else {
+                    format!("{}.{}", key, nested_key)
+                };
+                flatten_value(&nested_path, nested_val, vals)?;
+            }
+        }
+        _ => {
+            return Err(Error::InputsUnmarshal(
+                format!(
+                    "value for key {} must be an a number as a string, as a number of an array of strings of numbers",
+                    key)));
+        }
+    };
 
-    for v in vs {
-        match v {
-            serde_json::Value::String(s) => {
-                let i = ff.parse_str(s)?;
-                vals.push(i);
-            }
-            serde_json::Value::Number(n) => {
-                if !n.is_u64() {
-                    return Err(anyhow!("signal value is not a positive integer").into());
-                }
-                let n = n.as_u64().unwrap().to_string();
-                let i = ff.parse_str(&n)?;
-                vals.push(i);
-            }
-            serde_json::Value::Array(arr) => {
-                vals.extend_from_slice(flatten_array2(key, arr, ff)?.as_slice());
-            }
-            _ => {
-                return Err(anyhow!("inputs must be a string: {}", key).into());
-            }
-        };
+    Ok(())
+}
 
-    }
-    Ok(vals)
+fn flatten_array<T: FieldOps>(
+    key: &str,
+    v: &serde_json::Value,
+    ff: &Field<T>,
+    vals: &mut Vec<T>) -> Result<(), Box<dyn std::error::Error>> {
+
+    match v {
+        serde_json::Value::String(s) => {
+            let i = ff.parse_str(s)?;
+            vals.push(i);
+        }
+        serde_json::Value::Number(n) => {
+            if !n.is_u64() {
+                return Err(anyhow!("signal value is not a positive integer: {}", key).into());
+            }
+            let n = n.as_u64().unwrap().to_string();
+            let i = ff.parse_str(&n)?;
+            vals.push(i);
+        }
+        serde_json::Value::Array(arr) => {
+            for (idx, nested) in arr.iter().enumerate() {
+                let nested_key = format!("{}[{}]", key, idx);
+                flatten_array(&nested_key, nested, ff, vals)?;
+            }
+        }
+        _ => {
+            return Err(anyhow!(
+                "value for key {} must be an a number as a string, as a number of an array of strings or numbers",
+                key).into());
+        }
+    };
+
+    Ok(())
 }
 
 pub fn deserialize_inputs(inputs_data: &[u8]) -> Result<HashMap<String, Vec<U256>>, Error> {
@@ -346,33 +406,27 @@ pub fn deserialize_inputs(inputs_data: &[u8]) -> Result<HashMap<String, Vec<U256
 
     let mut inputs: HashMap<String, Vec<U256>> = HashMap::new();
     for (k, v) in map {
-        match v {
-            serde_json::Value::String(s) => {
-                let i = U256::from_str_radix(s.as_str(),10)?;
-                inputs.insert(k.clone(), vec![i]);
-            }
-            serde_json::Value::Number(n) => {
-                if !n.is_u64() {
-                    return Err(Error::InputsUnmarshal("signal value is not a positive integer".to_string()));
-                }
-                let i = U256::from(n.as_u64().unwrap());
-                inputs.insert(k.clone(), vec![i]);
-            }
-            serde_json::Value::Array(ss) => {
-                let vals: Vec<U256> = flatten_array(k.as_str(), &ss)?;
-                inputs.insert(k.clone(), vals);
+        let vals = match v {
+            serde_json::Value::String(_) |
+            serde_json::Value::Number(_) |
+            serde_json::Value::Array(_) |
+            serde_json::Value::Object(_) => {
+                let mut buf = Vec::with_capacity(calc_value_len(&v));
+                flatten_value(k.as_str(), &v, &mut buf)?;
+                buf
             }
             _ => {
                 return Err(Error::InputsUnmarshal(format!(
                     "value for key {} must be an a number as a string, as a number of an array of strings of numbers",
                     k.clone())));
             }
-        }
+        };
+        inputs.insert(k.clone(), vals);
     }
     Ok(inputs)
 }
 
-pub fn deserialize_inputs2<T: FieldOps>(
+pub fn deserialize_and_flatten_inputs<T: FieldOps>(
     inputs_data: &[u8],
     ff: &Field<T>) -> Result<HashMap<String, Vec<T>>, Box<dyn std::error::Error>> {
 
@@ -386,29 +440,21 @@ pub fn deserialize_inputs2<T: FieldOps>(
 
     let mut inputs: HashMap<String, Vec<T>> = HashMap::new();
     for (k, v) in map {
-        match v {
-            serde_json::Value::String(s) => {
-                let i = ff.parse_str(s.as_str())?;
-                inputs.insert(k.clone(), vec![i]);
-            }
-            serde_json::Value::Number(n) => {
-                if !n.is_u64() {
-                    return Err(anyhow!("signal value is not a positive integer").into());
-                }
-                let s = format!("{}", n.as_u64().unwrap());
-                let i = ff.parse_str(&s)?;
-                inputs.insert(k.clone(), vec![i]);
-            }
-            serde_json::Value::Array(ss) => {
-                let vals: Vec<T> = flatten_array2(k.as_str(), &ss, ff)?;
-                inputs.insert(k.clone(), vals);
+        let vals = match v {
+            serde_json::Value::String(_) |
+            serde_json::Value::Number(_) |
+            serde_json::Value::Array(_) => {
+                let mut buf = Vec::with_capacity(calc_value_len(&v));
+                flatten_array(k.as_str(), &v, ff, &mut buf)?;
+                buf
             }
             _ => {
                 return Err(anyhow!(
-                    "value for key {} must be an a number as a string, as a number of an array of strings of numbers",
+                    "value for key {} must be an a number as a string, as a number of an array of strings or numbers",
                     k.clone()).into());
             }
-        }
+        };
+        inputs.insert(k.clone(), vals);
     }
     Ok(inputs)
 }
@@ -530,8 +576,8 @@ mod tests {
     use prost::Message;
     use ruint::aliases::U256;
     use ruint::uint;
-    use crate::flatten_array;
     use crate::proto::InputNode;
+    use crate::field::{Field, U254, bn254_prime};
 
     #[test]
     fn test_ok() {
@@ -568,26 +614,20 @@ mod tests {
     }
 
     #[test]
-    fn test_flatten_array() {
-        let data = r#"["123", "456", 100500, [1, 2]]"#;
-        let v = serde_json::from_str(data).unwrap();
-        let res = flatten_array("key1", &v).unwrap();
+    fn test_deserialize_and_flatten_inputs() {
+        let data = r#"{"v":{"a":1,"b":{"c":2},"d":[3,4]}}"#;
+        let ff = Field::new(bn254_prime);
+        let err = super::deserialize_and_flatten_inputs::<U254>(data.as_bytes(), &ff).unwrap_err();
+        assert!(err.to_string().contains("value for key v must be an a number as a string, as a number of an array of strings or numbers"));
 
-        let want = vec![uint!(123_U256), uint!(456_U256), uint!(100500_U256), uint!(1_U256), uint!(2_U256)];
-        assert_eq!(want, res);
+        let data = r#"{"v":"1", "b": [[1, "2"], [3]]}"#;
+        let res = super::deserialize_and_flatten_inputs::<U254>(data.as_bytes(), &ff).unwrap();
+        let mut want = HashMap::new();
+        want.insert(String::from("v"), vec![U254::from(1)]);
+        want.insert(String::from("b"), vec![
+            U254::from(1),
+            U254::from(2),
+            U254::from(3)]);
+        assert_eq!(res, want);
     }
-
-    #[test]
-    fn test_calc_len() {
-        let data = r#"["123", "456", 100500]"#;
-        let v = serde_json::from_str(data).unwrap();
-        let l = super::calc_len(&v);
-        assert_eq!(l, 3);
-
-        let data = r#"["123", ["456", true], 100500]"#;
-        let v = serde_json::from_str(data).unwrap();
-        let l = super::calc_len(&v);
-        assert_eq!(l, 4);
-    }
-
 }

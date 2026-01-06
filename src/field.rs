@@ -409,6 +409,71 @@ impl<T: FieldOps> Field<T> {
             value.try_into().ok()
         }
     }
+
+    fn sqrt(&self, a: T) -> T {
+        if a == T::zero() {
+            return T::zero();
+        }
+        let one = T::one();
+        let zero = T::zero();
+        let mut q = self.prime - one;
+        let mut s: usize = 0;
+        while q.bitand(one) == zero {
+            q = q >> 1;
+            s += 1;
+        }
+
+        let legendre_exp = (self.prime - one) >> 1;
+        let legendre = self.pow(a, legendre_exp);
+        if legendre != one {
+            return zero;
+        }
+
+        if s == 1 {
+            let exp = (self.add(q, one)) >> 1;
+            let mut r = self.pow(a, exp);
+            if r > self.halfPrime {
+                r = self.sub(zero, r);
+            }
+            return r;
+        }
+
+        let mut z = self.parse_usize(2).unwrap();
+        while self.pow(z, legendre_exp) == one {
+            z = self.add(z, one);
+        }
+
+        let mut m = s;
+        let mut c = self.pow(z, q);
+        let mut t = self.pow(a, q);
+        let mut r = self.pow(a, (self.add(q, one)) >> 1);
+
+        while t != one {
+            let mut t2i = t;
+            let mut i = 0usize;
+            while t2i != one {
+                t2i = self.mul(t2i, t2i);
+                i += 1;
+                if i == m {
+                    return zero;
+                }
+            }
+            let mut b = c;
+            for _ in 0..(m - i - 1) {
+                b = self.mul(b, b);
+            }
+            c = self.mul(b, b);
+            t = self.mul(t, c);
+            r = self.mul(r, b);
+            m = i;
+        }
+
+        if r > self.halfPrime {
+            self.sub(zero, r)
+        } else {
+            r
+        }
+    }
 }
 
 impl<T: FieldOps> FieldOperations for &Field<T> {
@@ -463,6 +528,7 @@ impl<T: FieldOps> FieldOperations for &Field<T> {
             UnoOperation::Id => a,
             UnoOperation::Lnot => self.lnot(a),
             UnoOperation::Bnot => self.bnot(a),
+            UnoOperation::Sqrt => self.sqrt(a),
         }
     }
 

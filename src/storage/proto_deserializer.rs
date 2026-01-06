@@ -2,23 +2,33 @@ use std::io::{Cursor, Error, ErrorKind};
 use crate::field::{FieldOperations, FieldOps, U254, U64};
 use crate::graph::{Node, Nodes, NodesInterface, NodesStorage, Operation, TresOperation, UnoOperation, VecNodes};
 use crate::InputSignalsInfo;
-use crate::storage::{read_message, WriteBackReader, WITNESSCALC_GRAPH_MAGIC};
+use crate::storage::{deserialize_input_signal_info, read_message, WriteBackReader, WITNESSCALC_GRAPH_MAGIC_002, WITNESSCALC_GRAPH_MAGIC_001};
+use crate::vm2::Type;
+
+#[cfg_attr(test, derive(Debug, PartialEq))]
+pub enum InputInfo {
+    V1(InputSignalsInfo),
+    V2 {
+        input_info: Vec<crate::vm2::InputInfo>,
+        types: Vec<Type>,
+    },
+}
 
 // deserialize_witnesscalc_graph_from_bytes is almost the same as
 // deserialize_witnesscalc_graph but with custom implemented protobuf parser
 // specifically optimized to unpack the list of Nodes.
 pub fn deserialize_witnesscalc_graph_from_bytes(
     bytes: &[u8]
-) -> std::io::Result<(Box<dyn NodesInterface>, Vec<usize>, InputSignalsInfo)> {
+) -> std::io::Result<(Box<dyn NodesInterface>, Vec<usize>, InputInfo)> {
 
-    if bytes.len() < WITNESSCALC_GRAPH_MAGIC.len() {
+    let mut idx: usize = if bytes.starts_with(WITNESSCALC_GRAPH_MAGIC_002) {
+        WITNESSCALC_GRAPH_MAGIC_002.len()
+    } else if bytes.starts_with(WITNESSCALC_GRAPH_MAGIC_001) {
+        WITNESSCALC_GRAPH_MAGIC_001.len()
+    } else {
         return Err(Error::other("Invalid magic"));
-    }
-    if !bytes[..WITNESSCALC_GRAPH_MAGIC.len()].eq(WITNESSCALC_GRAPH_MAGIC) {
-        return Err(Error::other("Invalid magic"));
-    }
+    };
 
-    let mut idx: usize = WITNESSCALC_GRAPH_MAGIC.len();
     let nodes_num = u64::from_le_bytes(bytes[idx..idx+8].try_into().unwrap());
     idx += 8;
 
@@ -84,13 +94,20 @@ pub fn deserialize_witnesscalc_graph_from_bytes(
         .map(|x| *x as usize)
         .collect::<Vec<usize>>();
 
-    let input_signals = md.inputs.iter()
-        .map(|(k, v)| {
-            (k.clone(), (v.offset as usize, v.len as usize))
-        })
-        .collect::<InputSignalsInfo>();
+    let inputs_info = if bytes.starts_with(WITNESSCALC_GRAPH_MAGIC_001) {
+        InputInfo::V1(md.inputs.iter()
+            .map(|(k, v)| {
+                (k.clone(), (v.offset as usize, v.len as usize))
+            })
+            .collect::<InputSignalsInfo>())
+    } else if bytes.starts_with(WITNESSCALC_GRAPH_MAGIC_002) {
+        let (input_info, types) = deserialize_input_signal_info(&md.input_signal_info)?;
+        InputInfo::V2 { input_info, types }
+    } else {
+        unreachable!("magic bytes already validated at start of function")
+    };
 
-    Ok((outer_nodes, witness_signals, input_signals))
+    Ok((outer_nodes, witness_signals, inputs_info))
 }
 
 #[repr(u8)]
@@ -272,9 +289,10 @@ fn decode_uno_op_node<T: FieldOps + 'static, NS: NodesStorage + 'static>(
                     1 => UnoOperation::Id,
                     2 => UnoOperation::Lnot,
                     3 => UnoOperation::Bnot,
+                    4 => UnoOperation::Sqrt,
                     _ => return Err(Error::new(
                         ErrorKind::InvalidData,
-                        format!("Unknown DuoOp operation value: {}", value),
+                        format!("Unknown UnoOp operation value: {}", value),
                     )),
                 };
             },

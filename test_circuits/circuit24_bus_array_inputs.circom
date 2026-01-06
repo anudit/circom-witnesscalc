@@ -1,4 +1,4 @@
-//witnesscalc:enabled !graph !vm
+//witnesscalc:enabled !graph_v1 !vm
 pragma circom 2.0.0;
 
 bus Point() {

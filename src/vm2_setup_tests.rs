@@ -127,25 +127,25 @@ fn test_init_signals_with_buses() {
         let input_infos = vec![
             vm2::InputInfo{
                 name: "a".to_string(),
-                offset: 7,
+                offset: 6,
                 lengths: vec![2, 3],
                 type_id: None,
             },
             vm2::InputInfo{
                 name: "b".to_string(),
-                offset: 13,
+                offset: 12,
                 lengths: vec![3, 2],
                 type_id: None,
             },
             vm2::InputInfo{
                 name: "c".to_string(),
-                offset: 19,
+                offset: 18,
                 lengths: vec![],
                 type_id: Some("bus_1".to_string()),
             },
             vm2::InputInfo{
                 name: "d".to_string(),
-                offset: 28,
+                offset: 27,
                 lengths: vec![2],
                 type_id: Some("bus_1".to_string()),
             },
@@ -263,9 +263,9 @@ fn test_init_signals_flat_bus_arrays() {
     // in2: offset 24, 36 signals (24-59)
     // in3: offset 60, 48 signals (60-107)
     let input_infos = vec![
-        vm2::InputInfo{ name: "in1".to_string(), offset: 4, lengths: vec![5], type_id: Some("bus_0".to_string()) },
-        vm2::InputInfo{ name: "in2".to_string(), offset: 24, lengths: vec![3], type_id: Some("bus_1".to_string()) },
-        vm2::InputInfo{ name: "in3".to_string(), offset: 60, lengths: vec![3], type_id: Some("bus_2".to_string()) },
+        vm2::InputInfo{ name: "in1".to_string(), offset: 3, lengths: vec![5], type_id: Some("bus_0".to_string()) },
+        vm2::InputInfo{ name: "in2".to_string(), offset: 23, lengths: vec![3], type_id: Some("bus_1".to_string()) },
+        vm2::InputInfo{ name: "in3".to_string(), offset: 59, lengths: vec![3], type_id: Some("bus_2".to_string()) },
     ];
 
     // Total signals: 3 (output) + 104 (input) = 107

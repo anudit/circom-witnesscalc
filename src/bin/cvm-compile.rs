@@ -193,7 +193,7 @@ fn build_input_info(
     let outputs_count = calculate_outputs_count(&main_template.outputs, types)?;
     
     let mut input_infos = Vec::new();
-    let mut current_offset = outputs_count + 1; // signal #0 is always 1
+    let mut current_offset = outputs_count; // signal #0 is always 1
 
     // Process each input from the AST
     for input in inputs {
@@ -1644,19 +1644,19 @@ x_11 = get_signal i64.16
         let expected = vec![
             InputInfo {
                 name: "a".to_string(),
-                offset: 11,
+                offset: 10,
                 lengths: vec![5],
                 type_id: None,
             },
             InputInfo {
                 name: "inB".to_string(),
-                offset: 16,
+                offset: 15,
                 lengths: vec![],
                 type_id: None,
             },
             InputInfo {
                 name: "v".to_string(),
-                offset: 17,
+                offset: 16,
                 lengths: vec![],
                 type_id: Some("bus_2".to_string()),
             },

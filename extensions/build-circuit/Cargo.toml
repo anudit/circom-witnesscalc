@@ -5,12 +5,12 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.98"
-compiler = { git = "https://github.com/olomix/circom.git", branch = "master" }
-constraint_generation = { git = "https://github.com/olomix/circom.git", branch = "master" }
-program_structure = { git = "https://github.com/olomix/circom.git", branch = "master" }
-code_producers = { git = "https://github.com/olomix/circom.git", branch = "master" }
-type_analysis = { git = "https://github.com/olomix/circom.git", branch = "master" }
-parser = { git = "https://github.com/olomix/circom.git", branch = "master" }
+compiler = { git = "https://github.com/iden3/circom.git", branch = "master" }
+constraint_generation = { git = "https://github.com/iden3/circom.git", branch = "master" }
+program_structure = { git = "https://github.com/iden3/circom.git", branch = "master" }
+code_producers = { git = "https://github.com/iden3/circom.git", branch = "master" }
+type_analysis = { git = "https://github.com/iden3/circom.git", branch = "master" }
+parser = { git = "https://github.com/iden3/circom.git", branch = "master" }
 indicatif = "0.17.11"
 ruint = { version = "1.13.1", features = ["rand", "serde", "num-traits"] }
 circom-witnesscalc = { path = "../.." }

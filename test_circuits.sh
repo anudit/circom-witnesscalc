@@ -7,7 +7,7 @@ source "${script_dir}/check_witnesscalc.sh"
 
 ptau_url="https://storage.googleapis.com/zkevm/ptau/powersOfTau28_hez_final_18.ptau"
 
-required_commands=(circom snarkjs curl cargo node cmp)
+required_commands=(circom curl cargo node cmp)
 
 TEST_TAG="graph"
 
@@ -17,6 +17,16 @@ for cmd in "${required_commands[@]}"; do
 		exit 1
 	fi
 done
+
+if command -v snarkjs &>/dev/null; then
+	SNARKJS=snarkjs
+elif command -v npx &>/dev/null; then
+	SNARKJS="npx snarkjs"
+	echo "Using npx snarkjs"
+else
+	echo -e "${RED}\`snarkjs\` not found in PATH and npx is not available${NC}"
+	exit 1
+fi
 
 workdir="$(pwd)/test_working_dir"
 
@@ -173,31 +183,31 @@ function test_circuit() {
 	local vk_path="${workdir}/${circuit_name}_${r1cs_md5}_verification_key.json"
 
 	time node "${circuit_name}"_js/generate_witness.js "${circuit_name}"_js/"${circuit_name}".wasm "${inputs_path}" "${witness_path}2"
-	snarkjs wej "${witness_path}" "${witness_path}.json"
-	snarkjs wej "${witness_path}2" "${witness_path}2.json"
+	$SNARKJS wej "${witness_path}" "${witness_path}.json"
+	$SNARKJS wej "${witness_path}2" "${witness_path}2.json"
 
-	snarkjs wtns check "${r1cs_path}" "${witness_path}"
-	snarkjs wtns check "${r1cs_path}" "${witness_path}2"
+	$SNARKJS wtns check "${r1cs_path}" "${witness_path}"
+	$SNARKJS wtns check "${r1cs_path}" "${witness_path}2"
 	if ! cmp -s "${witness_path}" "${witness_path}2"; then
 		echo -e "${RED}Witnesses do not match${NC}"
 		exit 1
 	fi
 
 	if [ ! -f "$zkey_path" ]; then
-		snarkjs groth16 setup "${r1cs_path}" "$ptau_path" "${circuit_name}"_"${r1cs_md5}"_0000.zkey
+		$SNARKJS groth16 setup "${r1cs_path}" "$ptau_path" "${circuit_name}"_"${r1cs_md5}"_0000.zkey
 		local ENTROPY1
 		ENTROPY1=$(head -c 64 /dev/urandom | od -An -tx1 -v | tr -d ' \n')
-		snarkjs zkey contribute "${circuit_name}"_"${r1cs_md5}"_0000.zkey "${zkey_path}" --name="1st Contribution" -v -e="$ENTROPY1"
-		snarkjs zkey verify "${r1cs_path}" "$ptau_path" "${zkey_path}"
+		$SNARKJS zkey contribute "${circuit_name}"_"${r1cs_md5}"_0000.zkey "${zkey_path}" --name="1st Contribution" -v -e="$ENTROPY1"
+		$SNARKJS zkey verify "${r1cs_path}" "$ptau_path" "${zkey_path}"
 	fi
 	if [ ! -f "$vk_path" ]; then
-		snarkjs zkey export verificationkey "${zkey_path}" "${vk_path}"
+		$SNARKJS zkey export verificationkey "${zkey_path}" "${vk_path}"
 	fi
 	# export witness as text ints
 	# snarkjs wej witness.wtns witness.json
 
-	snarkjs groth16 prove "${zkey_path}" "${witness_path}" "${proof_path}" "${public_signals_path}"
-	snarkjs groth16 verify "${vk_path}" "${public_signals_path}" "${proof_path}"
+	$SNARKJS groth16 prove "${zkey_path}" "${witness_path}" "${proof_path}" "${public_signals_path}"
+	$SNARKJS groth16 verify "${vk_path}" "${public_signals_path}" "${proof_path}"
 
 	popd >/dev/null
 }

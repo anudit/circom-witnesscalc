@@ -2496,6 +2496,7 @@ struct Args {
     optimization_level: Option<OptimizationLevel>,
     named_temp: bool,
     temp_dir: PathBuf,
+    use_old_simplification_heuristics: bool,
 }
 
 fn parse_args() -> Args {
@@ -2511,6 +2512,7 @@ fn parse_args() -> Args {
     let mut optimization_level: Option<OptimizationLevel> = None;
     let mut named_temp: bool = false;
     let mut temp_dir: Option<PathBuf> = None;
+    let mut use_old_simplification_heuristics: bool = false;
 
     let usage = |err_msg: &str| {
         if !err_msg.is_empty() {
@@ -2536,6 +2538,8 @@ fn parse_args() -> Args {
         eprintln!("    --r1cs <r1cs_file>      Path to the R1CS file. If provided, the R1CS file will be");
         eprintln!("                            saved along with the generated graph");
         eprintln!("    --O0, --O1, --O2        Optimization level for circom. Default is --O2");
+        eprintln!("    --use_old_simplification_heuristics");
+        eprintln!("                            Use old simplification heuristics from circom < 2.0.9");
         eprintln!("    -v                      Verbose mode");
         eprintln!("    --named-temp            Normally, we create an unnamed temporary file that the OS");
         eprintln!("                            deletes when the process exits. With this flag enabled, we");
@@ -2618,6 +2622,8 @@ fn parse_args() -> Args {
                     prime = Some(p)
                 }
             }
+        } else if args[i] == "--use_old_simplification_heuristics" {
+            use_old_simplification_heuristics = true;
         } else if args[i] == "--named-temp" {
             named_temp = true;
         } else if args[i] == "--temp-dir" {
@@ -2652,6 +2658,7 @@ fn parse_args() -> Args {
         optimization_level,
         named_temp,
         temp_dir: temp_dir.unwrap_or_else(env::temp_dir),
+        use_old_simplification_heuristics,
     }
 }
 
@@ -2714,7 +2721,7 @@ fn main() {
         flag_f,
         flag_p: false,
         flag_verbose: false,
-        flag_old_heuristics: false,
+        flag_old_heuristics: args.use_old_simplification_heuristics,
         inspect_constraints: false,
         prime: args.prime.as_str().to_string(),
     };

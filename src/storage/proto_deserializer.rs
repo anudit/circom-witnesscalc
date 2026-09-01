@@ -59,7 +59,7 @@ pub fn deserialize_witnesscalc_graph_from_bytes(
             let prime = U64::from_le_bytes(
                 &<U254 as FieldOps>::to_le_bytes(&prime))
                 .unwrap();
-            let node_storage = VecNodes::new();
+            let node_storage = VecNodes::with_capacity(nodes_num as usize);
             let mut nodes = Nodes::new(
                 prime, curve_name, node_storage);
             for _ in 0..nodes_num {
@@ -71,7 +71,7 @@ pub fn deserialize_witnesscalc_graph_from_bytes(
             Box::new(nodes)
         }
         254 => {
-            let node_storage = VecNodes::new();
+            let node_storage = VecNodes::with_capacity(nodes_num as usize);
             let mut nodes = Nodes::new(
                 prime, curve_name, node_storage);
             for _ in 0..nodes_num {

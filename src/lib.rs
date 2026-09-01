@@ -139,7 +139,10 @@ pub fn wtns_from_u256_witness(witness: Vec<U256>) -> Vec<u8> {
 }
 
 fn wtns_from_witness(witness: Vec<FieldElement<32>>) -> Vec<u8> {
-    let mut buf = Vec::new();
+    // Pre-size the output buffer to the witness payload size (plus a little
+    // slack for the wtns header/section framing) so `write` doesn't have to
+    // grow-and-copy `buf` repeatedly for large witnesses.
+    let mut buf = Vec::with_capacity(witness.len() * 32 + 128);
     let m: [u8; 32] = Fr::MODULUS.to_bytes_le().as_slice().try_into().unwrap();
     let mut wtns_f = wtns_file::WtnsFile::from_vec(witness, m.into());
     wtns_f.version = 2;
@@ -152,7 +155,8 @@ fn wtns_from_witness(witness: Vec<FieldElement<32>>) -> Vec<u8> {
 pub fn wtns_from_witness2<const FS: usize, T: FieldOps>(
     witness: Vec<FieldElement<FS>>, prime: T) -> Vec<u8> {
 
-    let mut buf = Vec::new();
+    // See `wtns_from_witness` for why this is pre-sized.
+    let mut buf = Vec::with_capacity(witness.len() * FS + 128);
     let m: [u8; FS] = prime.to_le_bytes().as_slice().try_into().unwrap();
     let mut wtns_f = wtns_file::WtnsFile::from_vec(witness, m.into());
     wtns_f.version = 2;

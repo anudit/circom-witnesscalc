@@ -581,6 +581,12 @@ impl VecNodes {
             nodes: Vec::new(),
         }
     }
+
+    pub fn with_capacity(capacity: usize) -> Self {
+        VecNodes {
+            nodes: Vec::with_capacity(capacity),
+        }
+    }
 }
 
 impl Default for VecNodes {

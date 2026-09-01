@@ -256,11 +256,17 @@ pub(crate) const V3_TAG_DUO_BASE: u8 = 7; // + Operation code, 0..=19
 pub(crate) const V3_TAG_TRES_BASE: u8 = 27; // + TresOperation code, 0..=1
 pub(crate) const V3_NODE_RECORD_SIZE: usize = 13; // 1 tag byte + 3 * u32
 
-fn write_v3_node_record<W: Write>(w: &mut W, node: Node) -> std::io::Result<()> {
+/// Writes one node record. `const_remap` maps a `Node::Constant`'s index
+/// into `nodes.constants` to its index in the *compacted* constants table
+/// actually written to the file -- see `serialize_witnesscalc_graph_v3`
+/// for why that indirection exists.
+fn write_v3_node_record<W: Write>(
+    w: &mut W, node: Node, const_remap: &HashMap<usize, usize>) -> std::io::Result<()> {
+
     let (tag, a, b, c): (u8, u32, u32, u32) = match node {
         Node::Unknown => panic!("cannot serialize an Unknown node"),
         Node::Input(i) => (V3_TAG_INPUT, i as u32, 0, 0),
-        Node::Constant(i) => (V3_TAG_CONSTANT, i as u32, 0, 0),
+        Node::Constant(i) => (V3_TAG_CONSTANT, const_remap[&i] as u32, 0, 0),
         Node::UnoOp(op, a) => (V3_TAG_UNO_BASE + u8::from(&op), a as u32, 0, 0),
         Node::Op(op, a, b) => (V3_TAG_DUO_BASE + u8::from(&op), a as u32, b as u32, 0),
         Node::TresOp(op, a, b, c) => (V3_TAG_TRES_BASE + u8::from(&op), a as u32, b as u32, c as u32),
@@ -302,21 +308,41 @@ pub fn serialize_witnesscalc_graph_v3<W, T, NS>(
         input_signal_info: serialize_input_signal_info(input_infos, types)?,
     };
 
+    // `nodes.constants` is append-only over the whole build (every
+    // constant ever folded, across every template instance touched, not
+    // just the ones the final optimized graph still uses) and tree-shake
+    // never compacts it -- v1/v2 never notice because they embed each
+    // live Constant node's value inline and never look at the backing
+    // Vec's unused tail. v3 does need a real table, so build a compacted
+    // one here: only constants a surviving node actually references, in
+    // first-referenced order, with node records remapped to match.
+    let mut const_remap: HashMap<usize, usize> = HashMap::new();
+    for i in 0..nodes.len() {
+        if let Some(Node::Constant(c)) = nodes.nodes.get(i) {
+            let next = const_remap.len();
+            const_remap.entry(c).or_insert(next);
+        }
+    }
+    let mut compact_constants = vec![T::zero(); const_remap.len()];
+    for (&old, &new) in &const_remap {
+        compact_constants[new] = nodes.constants[old];
+    }
+
     for i in 0..nodes.len() {
         let node = nodes.nodes.get(i)
             .ok_or_else(|| Error::new(ErrorKind::InvalidData, "missing node"))?;
-        write_v3_node_record(&mut w, node)?;
+        write_v3_node_record(&mut w, node, &const_remap)?;
         ptr += V3_NODE_RECORD_SIZE;
     }
 
     // Constants table: `Node::Constant(i)` records above only carry `i`,
-    // an index into this table, not the value itself (unlike v1/v2, where
-    // each Constant node's protobuf message embeds its value inline). Read
-    // back with `nodes.constants[i]` filled in from here before any node
-    // referencing it is evaluated.
-    w.write_u64::<LittleEndian>(nodes.constants.len() as u64)?;
+    // an index into this (compacted) table, not the value itself (unlike
+    // v1/v2, where each Constant node's protobuf message embeds its value
+    // inline). Read back with `nodes.constants[i]` filled in from here
+    // before any node referencing it is evaluated.
+    w.write_u64::<LittleEndian>(compact_constants.len() as u64)?;
     ptr += 8;
-    for c in &nodes.constants {
+    for c in &compact_constants {
         let bytes = c.to_le_bytes();
         debug_assert_eq!(bytes.len(), T::BYTES);
         w.write_all(&bytes)?;

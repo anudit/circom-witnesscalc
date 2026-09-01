@@ -313,6 +313,31 @@ impl FieldOps for U254 {
         if value { Self::one() } else { Self::zero() }
     }
 
+    // Montgomery multiplication is only wired up for the bn254 prime: it's
+    // the modulus every real (non-test) invocation uses, and computing
+    // `inv`/`r2` requires a specific fixed odd modulus known up front.
+    // grumpkin (the other 254-bit prime this type is used for) and
+    // arbitrary test moduli fall back to the generic division-based path.
+    fn montgomery_params(prime: Self) -> Option<(u64, Self)> {
+        if prime != bn254_prime {
+            return None;
+        }
+        // inv = -prime^-1 mod 2^64
+        let inv: u64 = ruint::aliases::U64::wrapping_from(prime)
+            .inv_ring()
+            .unwrap()
+            .wrapping_neg()
+            .to();
+        // r2 = R^2 mod prime, where R = 2^(64 * LIMBS) = 2^256
+        let r2 = U254::from(2u64).pow_mod(U254::from(512u64), prime);
+        Some((inv, r2))
+    }
+
+    #[inline]
+    fn mul_redc(self, rhs: Self, m: Self, inv: u64) -> Self {
+        <U254>::mul_redc(self, rhs, m, inv)
+    }
+
     // fn from_usize(value: usize) -> Self {
     //     U254::from(value)
     // }
@@ -339,6 +364,23 @@ pub trait FieldOps: Sized + Copy + Zero + One + PartialEq + Sub<Output = Self>
     fn bit_len(self) -> usize;
     fn from_bool(value: bool) -> Self;
     // fn from_usize(value: usize) -> Self;
+
+    /// Returns Montgomery reduction constants `(inv, r2)` for `prime`, if
+    /// this type supports the fast Montgomery multiplication path for that
+    /// specific modulus. Defaults to unsupported; `mul_redc` is never called
+    /// unless this returns `Some`.
+    fn montgomery_params(prime: Self) -> Option<(u64, Self)> {
+        let _ = prime;
+        None
+    }
+
+    /// Montgomery multiplication: computes `self * rhs * R^-1 mod m`, where
+    /// `R = 2^(64 * LIMBS)` and `inv = -m^-1 mod 2^64`. Only called when
+    /// `montgomery_params` returned `Some` for `m`.
+    fn mul_redc(self, rhs: Self, m: Self, inv: u64) -> Self {
+        let _ = (rhs, m, inv);
+        unimplemented!("mul_redc called without montgomery_params support")
+    }
 }
 
 pub trait FieldOperations: Sync + Send {
@@ -382,6 +424,9 @@ pub struct Field<T> where T: FieldOps {
     pub prime: T,
     halfPrime: T,
     mask: T,
+    // Montgomery reduction constants (inv, r2) for `prime`, when the
+    // underlying type supports the fast REDC-based multiplication for it.
+    mont: Option<(u64, T)>,
 }
 
 impl<T: FieldOps> Field<T> {
@@ -396,6 +441,7 @@ impl<T: FieldOps> Field<T> {
             prime,
             halfPrime: prime >> 1,
             mask,
+            mont: T::montgomery_params(prime),
         }
     }
 
@@ -565,7 +611,19 @@ impl<T: FieldOps> FieldOperations for &Field<T> {
 
     #[inline]
     fn mul(&self, lhs: Self::Type, rhs: Self::Type) -> Self::Type {
-        lhs.mul_mod(rhs, self.prime)
+        if let Some((inv, r2)) = self.mont {
+            // Montgomery multiplication avoids the division that
+            // `mul_mod` performs on every call. `lhs` is first lifted
+            // into Montgomery form (`lhs * R mod p`) via one REDC call,
+            // then REDC'd against `rhs` directly (no representation
+            // change needed for `rhs`, `lhs`, or the result):
+            //   REDC(lhs * R2) = lhs * R mod p
+            //   REDC((lhs * R mod p) * rhs) = lhs * rhs mod p
+            let lhs_mont = lhs.mul_redc(r2, self.prime, inv);
+            lhs_mont.mul_redc(rhs, self.prime, inv)
+        } else {
+            lhs.mul_mod(rhs, self.prime)
+        }
     }
 
     #[inline]

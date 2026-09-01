@@ -303,12 +303,16 @@ impl From<&UnoOperation> for u8 {
 #[derive(Hash, PartialEq, Eq, Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum TresOperation {
     TernCond,
+    // a*b + c, fused so the evaluator can do it as one multiply-add
+    // instead of two separate graph nodes (Mul then Add).
+    Mla,
 }
 
 impl TresOperation {
     pub fn eval(&self, a: U256, b: U256, c: U256) -> U256 {
         match self {
             TresOperation::TernCond => if a == U256::ZERO { c } else { b },
+            TresOperation::Mla => a.mul_mod(b, M).add_mod(c, M),
         }
     }
 }
@@ -317,6 +321,7 @@ impl From<&TresOperation> for crate::proto::TresOp {
     fn from(v: &TresOperation) -> Self {
         match v {
             TresOperation::TernCond => crate::proto::TresOp::TernCond,
+            TresOperation::Mla => crate::proto::TresOp::Mla,
         }
     }
 }
@@ -326,6 +331,7 @@ impl TryFrom<u8> for TresOperation {
     fn try_from(op: u8) -> Result<Self, Self::Error> {
         match op {
             0 => Ok(TresOperation::TernCond),
+            1 => Ok(TresOperation::Mla),
             _ => Err(format!("Invalid ternary operation: {}", op)),
         }
     }
@@ -335,6 +341,7 @@ impl From<&TresOperation> for u8 {
     fn from(val: &TresOperation) -> Self {
         match val {
             TresOperation::TernCond => 0,
+            TresOperation::Mla => 1,
         }
     }
 }
@@ -976,7 +983,133 @@ pub fn optimize<T: FieldOps + 'static, NS: NodesStorage + 'static>(
     propagate(nodes);
     value_numbering(nodes, outputs);
     find_constants(nodes);
+    fuse_mla(nodes);
+    // Final tree-shake also drops any Mul node `fuse_mla` fused away that
+    // isn't referenced anywhere else.
     tree_shake(nodes, outputs);
+}
+
+/// Peephole-rewrites `Add(Mul(a, b), c)` (in either operand order) into a
+/// single `TresOp(Mla, a, b, c)` node computing `a*b + c` -- the shape of
+/// every linear-combination/mixing-layer step (Poseidon's MDS layer,
+/// affine circuit expressions, etc). Halves the node count and evaluate()
+/// iterations for that pattern, and lets `MontgomeryField` do it as one
+/// REDC + one add instead of two full graph nodes.
+///
+/// Rewrites the `Add` node in place; the `Mul` node it consumed is left
+/// untouched (still valid if referenced elsewhere) and is cleaned up by
+/// the tree-shake pass that runs after this one if it's now dead.
+pub fn fuse_mla<T: FieldOps + 'static, NS: NodesStorage + 'static>(
+    nodes: &mut Nodes<T, NS>) {
+
+    let mut fused = 0usize;
+    for i in 0..nodes.nodes.len() {
+        let Some(Node::Op(Operation::Add, x, y)) = nodes.nodes.get(i) else {
+            continue;
+        };
+        let mla = match nodes.nodes.get(x) {
+            Some(Node::Op(Operation::Mul, ma, mb)) => {
+                Some(Node::TresOp(TresOperation::Mla, ma, mb, y))
+            },
+            _ => match nodes.nodes.get(y) {
+                Some(Node::Op(Operation::Mul, ma, mb)) => {
+                    Some(Node::TresOp(TresOperation::Mla, ma, mb, x))
+                },
+                _ => None,
+            },
+        };
+        if let Some(n) = mla {
+            nodes.nodes.set(i, n);
+            fused += 1;
+        }
+    }
+    eprintln!("Fused {fused} multiply-add nodes into Mla");
+}
+
+/// Computes a slot assignment for `evaluate`'s live-value buffer: instead
+/// of one permanent array entry per node (`values[i]` for node `i`,
+/// `nodes.len()` entries, none ever freed), each node is assigned a
+/// reusable "slot" number, so the live buffer only needs to be as wide as
+/// the graph's actual peak concurrent liveness -- how many produced
+/// values can be simultaneously "still needed" at any point in the
+/// straight-line evaluation -- rather than its total node count. Every
+/// operand reference points strictly backward (`a, b, c < i`), so this is
+/// a standard linear-scan/free-list register allocation over that order.
+///
+/// Returns `(slot_of, width)`: `slot_of[i]` is the slot to read/write for
+/// node `i`'s value, and `width` is the live-buffer size to allocate
+/// (`values: Vec<T>` sized `width` instead of `nodes.len()`).
+fn assign_value_slots<NS: NodesStorage>(nodes: &NS, outputs: &[usize]) -> (Vec<u32>, usize) {
+    let n = nodes.len();
+
+    // last_use[i]: the highest node index that still references node i's
+    // value. Defaults to `i` itself (nothing references it, so it can be
+    // freed the moment it's produced), overridden to a sentinel for graph
+    // outputs so they survive until the caller reads them after the loop.
+    let mut last_use: Vec<u32> = (0..n as u32).collect();
+    for i in 0..n {
+        match nodes.get(i).unwrap() {
+            Node::Op(_, a, b) => {
+                last_use[a] = i as u32;
+                last_use[b] = i as u32;
+            },
+            Node::UnoOp(_, a) => {
+                last_use[a] = i as u32;
+            },
+            Node::TresOp(_, a, b, c) => {
+                last_use[a] = i as u32;
+                last_use[b] = i as u32;
+                last_use[c] = i as u32;
+            },
+            Node::Constant(_) | Node::Input(_) | Node::Unknown => {},
+        }
+    }
+    let never = n as u32; // one past any real node index: never released
+    for &o in outputs {
+        last_use[o] = never;
+    }
+
+    let mut slot_of: Vec<u32> = vec![0; n];
+    let mut free_slots: Vec<u32> = Vec::new();
+    let mut next_slot: u32 = 0;
+
+    let release = |idx: usize, i: usize, slot_of: &[u32], last_use: &[u32], free_slots: &mut Vec<u32>| {
+        if last_use[idx] as usize == i {
+            free_slots.push(slot_of[idx]);
+        }
+    };
+
+    for i in 0..n {
+        match nodes.get(i).unwrap() {
+            Node::Op(_, a, b) => {
+                release(a, i, &slot_of, &last_use, &mut free_slots);
+                release(b, i, &slot_of, &last_use, &mut free_slots);
+            },
+            Node::UnoOp(_, a) => {
+                release(a, i, &slot_of, &last_use, &mut free_slots);
+            },
+            Node::TresOp(_, a, b, c) => {
+                release(a, i, &slot_of, &last_use, &mut free_slots);
+                release(b, i, &slot_of, &last_use, &mut free_slots);
+                release(c, i, &slot_of, &last_use, &mut free_slots);
+            },
+            Node::Constant(_) | Node::Input(_) | Node::Unknown => {},
+        }
+        slot_of[i] = if let Some(s) = free_slots.pop() {
+            s
+        } else {
+            let s = next_slot;
+            next_slot += 1;
+            s
+        };
+    }
+
+    eprintln!(
+        "value-slot reuse: {} nodes -> peak live width {} ({:.1}% of node count)",
+        n, next_slot, 100.0 * next_slot as f64 / n.max(1) as f64
+    );
+
+    (slot_of, next_slot as usize)
 }
 
 pub fn evaluate<T: FieldOps, F: FieldOperations<Type = T>, NS: NodesStorage>(
@@ -987,8 +1120,12 @@ where Vec<T>: FromIterator<<F as FieldOperations>::Type>
     // assert_valid(nodes);
 
     let start = Instant::now();
-    // Evaluate the graph.
-    let mut values = Vec::with_capacity(nodes.len());
+    let (slot_of, width) = assign_value_slots(nodes, outputs);
+
+    // Evaluate the graph. `values` is sized to the graph's peak
+    // concurrent liveness (`width`), not its total node count, and
+    // addressed through `slot_of` -- see `assign_value_slots`.
+    let mut values: Vec<T> = vec![T::zero(); width];
     for i in 0..nodes.len() {
         let node = nodes.get(i).unwrap();
         let value = match node {
@@ -996,23 +1133,19 @@ where Vec<T>: FromIterator<<F as FieldOperations>::Type>
             Node::Constant(i) => constants[i],
             Node::Input(i) => inputs[i],
             Node::Op(op, a, b) => {
-                ff.op_duo(op, values[a], values[b])
+                ff.op_duo(op, values[slot_of[a] as usize], values[slot_of[b] as usize])
             },
             Node::UnoOp(op, a) => {
-                ff.op_uno(op, values[a])
+                ff.op_uno(op, values[slot_of[a] as usize])
             },
             Node::TresOp(op, a, b, c) => {
-                match op {
-                    TresOperation::TernCond => {
-                        if values[a].is_zero() { values[c] } else { values[b] }
-                    },
-                }
+                ff.op_tres(op, values[slot_of[a] as usize], values[slot_of[b] as usize], values[slot_of[c] as usize])
             },
         };
-        values.push(value);
+        values[slot_of[i] as usize] = value;
     }
 
-    let r = outputs.iter().map(|&i| values[i]).collect();
+    let r = outputs.iter().map(|&i| values[slot_of[i] as usize]).collect();
     println!("generic typed graph calculated in {:?}", start.elapsed());
     r
 }

@@ -24,9 +24,9 @@ use wtns_file::FieldElement;
 use ark_bn254::Fr;
 use ark_ff::{BigInteger, PrimeField};
 use indicatif::{ProgressBar, ProgressStyle};
-use crate::field::{bn254_prime, Field, FieldOperations, FieldOps, U254, U64};
+use crate::field::{bn254_prime, Field, FieldOperations, FieldOps, MontgomeryField, U254, U64};
 use crate::storage::proto_deserializer::{deserialize_witnesscalc_graph_from_bytes, InputInfo};
-use crate::storage::{deserialize_witnesscalc_vm2_body, read_witnesscalc_vm2_header, WITNESSCALC_CVM_MAGIC, WITNESSCALC_GRAPH_MAGIC_002, WITNESSCALC_GRAPH_MAGIC_001};
+use crate::storage::{deserialize_witnesscalc_vm2_body, read_witnesscalc_vm2_header, WITNESSCALC_CVM_MAGIC, WITNESSCALC_GRAPH_MAGIC_001, WITNESSCALC_GRAPH_MAGIC_002, WITNESSCALC_GRAPH_MAGIC_003};
 use crate::vm2::{execute, Circuit, Component};
 use crate::vm2::InputInfoSliceExt;
 use crate::vm2_setup::{build_component_tree, init_signals};
@@ -169,7 +169,8 @@ pub fn wtns_from_witness2<const FS: usize, T: FieldOps>(
 pub fn calc_witness(
     inputs: &str,
     wcd_data: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    if wcd_data.starts_with(WITNESSCALC_GRAPH_MAGIC_002) ||
+    if wcd_data.starts_with(WITNESSCALC_GRAPH_MAGIC_003) ||
+        wcd_data.starts_with(WITNESSCALC_GRAPH_MAGIC_002) ||
         wcd_data.starts_with(WITNESSCALC_GRAPH_MAGIC_001) {
         calc_witness_graph(inputs, wcd_data)
     } else if wcd_data.starts_with(WITNESSCALC_CVM_MAGIC) {
@@ -230,8 +231,22 @@ fn calc_witness_typed<T: FieldOps, NS: NodesStorage>(
         }
     };
 
-    let result = evaluate(
-        &nodes.ff, &nodes.nodes, &inputs, signals, &nodes.constants);
+    let result = if let Some(mont) = MontgomeryField::try_new(&nodes.ff) {
+        // Evaluate entirely in Montgomery domain: lift constants/inputs
+        // once up front, run the graph (every `Mul` becomes a single REDC
+        // instead of the canonical path's lift-then-reduce pair), then
+        // reduce the requested outputs back to canonical form. See
+        // `MontgomeryField` for why this is safe/correct.
+        let mont_constants: Vec<T> = nodes.constants.iter()
+            .map(|&c| mont.to_mont(c)).collect();
+        let mont_inputs: Vec<T> = inputs.iter()
+            .map(|&v| mont.to_mont(v)).collect();
+        let mont_result = evaluate(
+            mont, &nodes.nodes, &mont_inputs, signals, &mont_constants);
+        mont_result.into_iter().map(|v| mont.from_mont(v)).collect()
+    } else {
+        evaluate(&nodes.ff, &nodes.nodes, &inputs, signals, &nodes.constants)
+    };
 
     Ok(result)
 }

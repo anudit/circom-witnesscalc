@@ -7,7 +7,7 @@ use num_bigint::BigUint;
 use prost::Message;
 use ruint::aliases::U256;
 use crate::field::{FieldOps, Field};
-use crate::graph::{Nodes, NodesStorage, Operation, TresOperation, UnoOperation};
+use crate::graph::{Node, Nodes, NodesStorage, Operation, TresOperation, UnoOperation};
 use crate::proto::SignalDescription;
 use crate::proto::vm::{IoDef, IoDefs};
 use crate::vm::{Function, Template};
@@ -130,6 +130,13 @@ pub mod proto_deserializer;
 
 pub(crate) const WITNESSCALC_GRAPH_MAGIC_001: &[u8] = b"wtns.graph.001";
 pub(crate) const WITNESSCALC_GRAPH_MAGIC_002: &[u8] = b"wtns.graph.002";
+// v3: same overall layout as v2 (fixed 8-byte node count, node section,
+// length-delimited GraphMetadata, trailing 8-byte pointer to it), but the
+// node section is a flat array of fixed-13-byte records instead of
+// length-delimited protobuf messages -- see `serialize_witnesscalc_graph_v3`
+// / `proto_deserializer::decode_node_v3`. No per-node tag/varint parsing,
+// so loading is a straight scan instead of a decode loop.
+pub(crate) const WITNESSCALC_GRAPH_MAGIC_003: &[u8] = b"wtns.graph.003";
 const WITNESSCALC_VM_MAGIC: &[u8] = b"wtns.vm.001";
 pub(crate) const WITNESSCALC_CVM_MAGIC: &[u8] = b"wtns.cvm.001";
 
@@ -178,6 +185,7 @@ impl From<crate::proto::TresOp> for TresOperation {
     fn from(value: crate::proto::TresOp) -> Self {
         match value {
             crate::proto::TresOp::TernCond => TresOperation::TernCond,
+            crate::proto::TresOp::Mla => TresOperation::Mla,
         }
     }
 }
@@ -229,6 +237,95 @@ pub fn serialize_witnesscalc_graph<W, T, NS>(
     metadata.encode_length_delimited(&mut buf)?;
     w.write_all(&buf)?;
     buf.clear();
+
+    w.write_u64::<LittleEndian>(ptr as u64)?;
+
+    Ok(())
+}
+
+// v3 node record tag scheme: a single byte identifying both the node kind
+// and (for Uno/Duo/TresOp) which operation, followed by three u32 LE
+// operand fields (unused ones are zero). Kept as plain constants rather
+// than an enum so writer and reader can each do trivial arithmetic
+// (tag - base) instead of a match, and so the numbering is documented in
+// exactly one place.
+pub(crate) const V3_TAG_INPUT: u8 = 0;
+pub(crate) const V3_TAG_CONSTANT: u8 = 1;
+pub(crate) const V3_TAG_UNO_BASE: u8 = 2; // + UnoOperation code, 0..=4
+pub(crate) const V3_TAG_DUO_BASE: u8 = 7; // + Operation code, 0..=19
+pub(crate) const V3_TAG_TRES_BASE: u8 = 27; // + TresOperation code, 0..=1
+pub(crate) const V3_NODE_RECORD_SIZE: usize = 13; // 1 tag byte + 3 * u32
+
+fn write_v3_node_record<W: Write>(w: &mut W, node: Node) -> std::io::Result<()> {
+    let (tag, a, b, c): (u8, u32, u32, u32) = match node {
+        Node::Unknown => panic!("cannot serialize an Unknown node"),
+        Node::Input(i) => (V3_TAG_INPUT, i as u32, 0, 0),
+        Node::Constant(i) => (V3_TAG_CONSTANT, i as u32, 0, 0),
+        Node::UnoOp(op, a) => (V3_TAG_UNO_BASE + u8::from(&op), a as u32, 0, 0),
+        Node::Op(op, a, b) => (V3_TAG_DUO_BASE + u8::from(&op), a as u32, b as u32, 0),
+        Node::TresOp(op, a, b, c) => (V3_TAG_TRES_BASE + u8::from(&op), a as u32, b as u32, c as u32),
+    };
+    w.write_u8(tag)?;
+    w.write_u32::<LittleEndian>(a)?;
+    w.write_u32::<LittleEndian>(b)?;
+    w.write_u32::<LittleEndian>(c)?;
+    Ok(())
+}
+
+/// Same overall file layout as `serialize_witnesscalc_graph` (v2), but the
+/// node section is a flat array of fixed-size records (see
+/// `write_v3_node_record`) instead of length-delimited protobuf messages.
+/// Loading doesn't need to parse any per-node tags/varints -- see
+/// `proto_deserializer::decode_node_v3`.
+pub fn serialize_witnesscalc_graph_v3<W, T, NS>(
+    mut w: W, nodes: &Nodes<T, NS>, witness_signals: &[usize],
+    input_infos: &[vm2::InputInfo], types: &[vm2::Type]) -> std::io::Result<()>
+    where
+        W: Write,
+        T: FieldOps + 'static,
+        NS: NodesStorage + 'static {
+
+    let mut ptr = 0usize;
+    w.write_all(WITNESSCALC_GRAPH_MAGIC_003).unwrap();
+    ptr += WITNESSCALC_GRAPH_MAGIC_003.len();
+
+    w.write_u64::<LittleEndian>(nodes.nodes.len() as u64)?;
+    ptr += 8;
+
+    let metadata = crate::proto::GraphMetadata {
+        witness_signals: witness_signals.iter().map(|x| *x as u32).collect::<Vec<u32>>(),
+        inputs: HashMap::new(),
+        prime: Some(crate::proto::BigUInt {
+            value_le: nodes.prime().to_le_bytes()
+        }),
+        prime_str: nodes.prime_str(),
+        input_signal_info: serialize_input_signal_info(input_infos, types)?,
+    };
+
+    for i in 0..nodes.len() {
+        let node = nodes.nodes.get(i)
+            .ok_or_else(|| Error::new(ErrorKind::InvalidData, "missing node"))?;
+        write_v3_node_record(&mut w, node)?;
+        ptr += V3_NODE_RECORD_SIZE;
+    }
+
+    // Constants table: `Node::Constant(i)` records above only carry `i`,
+    // an index into this table, not the value itself (unlike v1/v2, where
+    // each Constant node's protobuf message embeds its value inline). Read
+    // back with `nodes.constants[i]` filled in from here before any node
+    // referencing it is evaluated.
+    w.write_u64::<LittleEndian>(nodes.constants.len() as u64)?;
+    ptr += 8;
+    for c in &nodes.constants {
+        let bytes = c.to_le_bytes();
+        debug_assert_eq!(bytes.len(), T::BYTES);
+        w.write_all(&bytes)?;
+        ptr += bytes.len();
+    }
+
+    let mut buf = Vec::with_capacity(metadata.encoded_len() + MAX_VARINT_LENGTH);
+    metadata.encode_length_delimited(&mut buf)?;
+    w.write_all(&buf)?;
 
     w.write_u64::<LittleEndian>(ptr as u64)?;
 

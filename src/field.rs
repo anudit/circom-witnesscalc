@@ -605,7 +605,8 @@ impl<T: FieldOps> FieldOperations for &Field<T> {
 
     fn op_tres(&self, op: TresOperation, a: T, b: T, c: T) -> T {
         match op {
-            TresOperation::TernCond => if a.is_zero() { c } else { b }
+            TresOperation::TernCond => if a.is_zero() { c } else { b },
+            TresOperation::Mla => self.add(self.mul(a, b), c),
         }
     }
 
@@ -839,6 +840,236 @@ impl<T: FieldOps> FieldOperations for &Field<T> {
         } else {
             self.prime - lhs
         }
+    }
+}
+
+/// A `FieldOperations` view over `Field<T>` that keeps every value
+/// permanently in Montgomery form (`x * R mod p`) instead of canonical
+/// form, for the duration of a single graph evaluation.
+///
+/// `mul` becomes a single REDC call (`a_mont * b_mont * R^-1 mod p`)
+/// instead of `Field::mul`'s lift-then-reduce pair, because both operands
+/// are already scaled by `R`. `add`/`sub`/`neg`/equality/zero-checks are
+/// representation-invariant (Montgomery scaling is linear and injective,
+/// and 0 is a fixed point) and need no conversion at all. Ops that care
+/// about canonical magnitude or bit pattern — comparisons, `%`, `\`,
+/// bitwise ops, `**`, `sqrt` — convert their operand(s) to canonical form,
+/// compute with `Field`'s ordinary (canonical) implementation, and convert
+/// the result back.
+///
+/// This is purely a local evaluation-time optimization: it is the
+/// caller's responsibility to lift inputs/constants into Montgomery form
+/// with `to_mont` before use and reduce outputs back to canonical form
+/// with `from_mont` afterward. It must never be used for anything that
+/// gets serialized to the graph file or otherwise leaves the evaluation —
+/// `Field<T>` itself (used by graph construction/serialization) stays
+/// canonical-only.
+#[derive(Clone, Copy)]
+pub struct MontgomeryField<'a, T: FieldOps> {
+    inner: &'a Field<T>,
+    inv: u64,
+    r2: T,
+    // Montgomery form of 1 (`R mod p`), used as the "true" boolean result
+    // of comparisons/logical ops instead of `T::one()`.
+    mont_one: T,
+}
+
+impl<'a, T: FieldOps> MontgomeryField<'a, T> {
+    /// Returns `None` if `inner`'s prime doesn't support the Montgomery
+    /// fast path (anything other than the fixed bn254 prime today).
+    pub fn try_new(inner: &'a Field<T>) -> Option<Self> {
+        let (inv, r2) = inner.mont?;
+        let mont_one = T::one().mul_redc(r2, inner.prime, inv);
+        Some(MontgomeryField { inner, inv, r2, mont_one })
+    }
+
+    #[inline]
+    pub fn to_mont(&self, x: T) -> T {
+        x.mul_redc(self.r2, self.inner.prime, self.inv)
+    }
+
+    #[inline]
+    pub fn from_mont(&self, x: T) -> T {
+        x.mul_redc(T::one(), self.inner.prime, self.inv)
+    }
+}
+
+impl<'a, T: FieldOps> FieldOperations for MontgomeryField<'a, T> {
+    type Type = T;
+
+    fn parse_str(&self, v: &str) -> Result<Self::Type, Box<dyn std::error::Error>> {
+        Ok(self.to_mont(self.inner.parse_str(v)?))
+    }
+
+    fn parse_le_bytes(&self, v: &[u8]) -> Result<Self::Type, Box<dyn std::error::Error + Sync + Send>> {
+        Ok(self.to_mont(self.inner.parse_le_bytes(v)?))
+    }
+
+    fn parse_usize(&self, v: usize) -> Result<Self::Type, Box<dyn std::error::Error>> {
+        Ok(self.to_mont(self.inner.parse_usize(v)?))
+    }
+
+    fn op_uno(&self, op: UnoOperation, a: T) -> T {
+        match op {
+            UnoOperation::Neg => self.neg(a),
+            UnoOperation::Id => a,
+            UnoOperation::Lnot => self.lnot(a),
+            UnoOperation::Bnot => self.bnot(a),
+            UnoOperation::Sqrt => self.to_mont(self.inner.sqrt(self.from_mont(a))),
+        }
+    }
+
+    fn op_duo(&self, op: Operation, a: T, b: T) -> T {
+        match op {
+            Operation::Mul => self.mul(a, b),
+            Operation::Div => self.div(a, b),
+            Operation::Add => self.add(a, b),
+            Operation::Sub => self.sub(a, b),
+            Operation::Pow => self.pow(a, b),
+            Operation::Idiv => self.idiv(a, b),
+            Operation::Mod => self.modulo(a, b),
+            Operation::Eq => self.eq(a, b),
+            Operation::Neq => self.neq(a, b),
+            Operation::Lt => self.lt(a, b),
+            Operation::Gt => self.gt(a, b),
+            Operation::Leq => self.lte(a, b),
+            Operation::Geq => self.gte(a, b),
+            Operation::Land => self.land(a, b),
+            Operation::Lor => self.lor(a, b),
+            Operation::Shl => self.shl(a, b),
+            Operation::Shr => self.shr(a, b),
+            Operation::Bor => self.bor(a, b),
+            Operation::Band => self.band(a, b),
+            Operation::Bxor => self.bxor(a, b),
+        }
+    }
+
+    fn op_tres(&self, op: TresOperation, a: T, b: T, c: T) -> T {
+        match op {
+            TresOperation::TernCond => if a.is_zero() { c } else { b },
+            // a*b + c: single REDC (both operands already Montgomery-form)
+            // plus one representation-invariant add.
+            TresOperation::Mla => self.add(self.mul(a, b), c),
+        }
+    }
+
+    #[inline]
+    fn mul(&self, lhs: T, rhs: T) -> T {
+        lhs.mul_redc(rhs, self.inner.prime, self.inv)
+    }
+
+    #[inline]
+    fn div(&self, lhs: T, rhs: T) -> T {
+        if rhs.is_zero() {
+            return T::zero();
+        }
+        let inv_canon = self.from_mont(rhs).inv_mod(self.inner.prime);
+        lhs.mul_redc(self.to_mont(inv_canon), self.inner.prime, self.inv)
+    }
+
+    #[inline]
+    fn add(&self, lhs: T, rhs: T) -> T {
+        self.inner.add(lhs, rhs)
+    }
+
+    #[inline]
+    fn sub(&self, lhs: T, rhs: T) -> T {
+        self.inner.sub(lhs, rhs)
+    }
+
+    #[inline]
+    fn pow(&self, lhs: T, rhs: T) -> T {
+        self.to_mont(self.inner.pow(self.from_mont(lhs), self.from_mont(rhs)))
+    }
+
+    #[inline]
+    fn modulo(&self, lhs: T, rhs: T) -> T {
+        self.to_mont(self.inner.modulo(self.from_mont(lhs), self.from_mont(rhs)))
+    }
+
+    #[inline]
+    fn eq(&self, lhs: T, rhs: T) -> T {
+        if lhs == rhs { self.mont_one } else { T::zero() }
+    }
+
+    #[inline]
+    fn neq(&self, lhs: T, rhs: T) -> T {
+        if lhs != rhs { self.mont_one } else { T::zero() }
+    }
+
+    #[inline]
+    fn lt(&self, lhs: T, rhs: T) -> T {
+        if self.inner.lt(self.from_mont(lhs), self.from_mont(rhs)).is_zero() { T::zero() } else { self.mont_one }
+    }
+
+    #[inline]
+    fn gt(&self, lhs: T, rhs: T) -> T {
+        if self.inner.gt(self.from_mont(lhs), self.from_mont(rhs)).is_zero() { T::zero() } else { self.mont_one }
+    }
+
+    #[inline]
+    fn lte(&self, lhs: T, rhs: T) -> T {
+        if self.inner.lte(self.from_mont(lhs), self.from_mont(rhs)).is_zero() { T::zero() } else { self.mont_one }
+    }
+
+    #[inline]
+    fn gte(&self, lhs: T, rhs: T) -> T {
+        if self.inner.gte(self.from_mont(lhs), self.from_mont(rhs)).is_zero() { T::zero() } else { self.mont_one }
+    }
+
+    #[inline]
+    fn land(&self, lhs: T, rhs: T) -> T {
+        if !lhs.is_zero() && !rhs.is_zero() { self.mont_one } else { T::zero() }
+    }
+
+    #[inline]
+    fn lor(&self, lhs: T, rhs: T) -> T {
+        if !lhs.is_zero() || !rhs.is_zero() { self.mont_one } else { T::zero() }
+    }
+
+    #[inline]
+    fn lnot(&self, lhs: T) -> T {
+        if lhs.is_zero() { self.mont_one } else { T::zero() }
+    }
+
+    #[inline]
+    fn shl(&self, lhs: T, rhs: T) -> T {
+        self.to_mont(self.inner.shl(self.from_mont(lhs), self.from_mont(rhs)))
+    }
+
+    #[inline]
+    fn shr(&self, lhs: T, rhs: T) -> T {
+        self.to_mont(self.inner.shr(self.from_mont(lhs), self.from_mont(rhs)))
+    }
+
+    #[inline]
+    fn bor(&self, lhs: T, rhs: T) -> T {
+        self.to_mont(self.inner.bor(self.from_mont(lhs), self.from_mont(rhs)))
+    }
+
+    #[inline]
+    fn band(&self, lhs: T, rhs: T) -> T {
+        self.to_mont(self.inner.band(self.from_mont(lhs), self.from_mont(rhs)))
+    }
+
+    #[inline]
+    fn bxor(&self, lhs: T, rhs: T) -> T {
+        self.to_mont(self.inner.bxor(self.from_mont(lhs), self.from_mont(rhs)))
+    }
+
+    #[inline]
+    fn bnot(&self, lhs: T) -> T {
+        self.to_mont(self.inner.bnot(self.from_mont(lhs)))
+    }
+
+    #[inline]
+    fn idiv(&self, lhs: T, rhs: T) -> T {
+        self.to_mont(self.inner.idiv(self.from_mont(lhs), self.from_mont(rhs)))
+    }
+
+    #[inline]
+    fn neg(&self, lhs: T) -> T {
+        self.inner.neg(lhs)
     }
 }
 
@@ -1465,5 +1696,134 @@ mod tests {
 
         let x = (&ff).parse_str("-2").unwrap();
         assert_eq!(x, U254::from_str("21888242871839275222246405745257275088548364400416034343698204186575808495615").unwrap());
+    }
+
+    #[test]
+    fn test_montgomery_field_matches_canonical() {
+        use crate::field::MontgomeryField;
+        use crate::graph::{Operation, TresOperation, UnoOperation};
+        use rand::{Rng, SeedableRng};
+        use rand::rngs::StdRng;
+
+        let ff = ff_bn256();
+        let mont = MontgomeryField::try_new(&ff).expect("bn254 must support montgomery");
+
+        let duo_ops = [
+            Operation::Mul, Operation::Div, Operation::Add, Operation::Sub,
+            Operation::Pow, Operation::Idiv, Operation::Mod, Operation::Eq,
+            Operation::Neq, Operation::Lt, Operation::Gt, Operation::Leq,
+            Operation::Geq, Operation::Land, Operation::Lor, Operation::Shl,
+            Operation::Shr, Operation::Bor, Operation::Band, Operation::Bxor,
+        ];
+        let uno_ops = [
+            UnoOperation::Neg, UnoOperation::Id, UnoOperation::Lnot,
+            UnoOperation::Bnot, UnoOperation::Sqrt,
+        ];
+        let tres_ops = [TresOperation::TernCond, TresOperation::Mla];
+
+        // Edge cases known to be tricky: 0, 1, prime-1, values straddling
+        // halfPrime (sign flip for comparisons), and a small exponent (Pow
+        // is expensive to fuzz broadly).
+        let edge: Vec<U254> = vec![
+            U254::from(0u64),
+            U254::from(1u64),
+            U254::from(2u64),
+            U254::from(5u64),
+            bn254_prime - U254::from(1u64),
+            bn254_prime >> 1,
+            (bn254_prime >> 1) + U254::from(1u64),
+        ];
+
+        let mut rng = StdRng::seed_from_u64(0xC0FFEE);
+        let mut values: Vec<U254> = edge.clone();
+        for _ in 0..40 {
+            // Mask off the top 2 bits of the high limb so the raw bits
+            // always fit U254's 254-bit range before reducing mod prime.
+            let raw: [u64; 4] = [rng.gen(), rng.gen(), rng.gen(), rng.gen::<u64>() & 0x3FFF_FFFF_FFFF_FFFF];
+            let v = U254::from_limbs(raw) % bn254_prime;
+            values.push(v);
+        }
+
+        for &op in &duo_ops {
+            for &a in &values {
+                for &b in &values {
+                    // Pow with huge random exponents is astronomically
+                    // slow (repeated squaring over a ~254-bit exponent
+                    // for every pair) -- restrict its exponent operand to
+                    // the small `edge` set, which still covers 0/1/2 and
+                    // sign-boundary exponents.
+                    if op == Operation::Pow && !edge.contains(&b) {
+                        continue;
+                    }
+                    // `Mod`'s canonical implementation is plain `lhs % rhs`
+                    // with no zero-divisor guard (pre-existing behavior,
+                    // unrelated to Montgomery) -- skip b=0 so this test
+                    // stays about value-correctness, not crash-parity.
+                    if op == Operation::Mod && b.is_zero() {
+                        continue;
+                    }
+                    let want = (&ff).op_duo(op, a, b);
+                    let got_mont = mont.op_duo(op, mont.to_mont(a), mont.to_mont(b));
+                    let got = mont.from_mont(got_mont);
+                    assert_eq!(
+                        want, got,
+                        "op_duo {:?}({}, {}): canonical={} montgomery={}",
+                        op, a, b, want, got
+                    );
+                }
+            }
+        }
+
+        for &op in &uno_ops {
+            for &a in &values {
+                if op == UnoOperation::Sqrt {
+                    // Sqrt is only defined for quadratic residues; most
+                    // random values aren't, but the field's algorithm
+                    // returns 0 for non-residues on both paths, so this
+                    // still exercises real agreement, just mostly on 0.
+                }
+                let want = (&ff).op_uno(op, a);
+                let got_mont = mont.op_uno(op, mont.to_mont(a));
+                let got = mont.from_mont(got_mont);
+                assert_eq!(
+                    want, got,
+                    "op_uno {:?}({}): canonical={} montgomery={}",
+                    op, a, want, got
+                );
+            }
+        }
+
+        for &op in &tres_ops {
+            for &a in &values {
+                for &b in &values {
+                    for &c in &[U254::from(0u64), U254::from(1u64), U254::from(7u64)] {
+                        let want = (&ff).op_tres(op, a, b, c);
+                        let got_mont = mont.op_tres(
+                            op, mont.to_mont(a), mont.to_mont(b), mont.to_mont(c));
+                        let got = mont.from_mont(got_mont);
+                        assert_eq!(
+                            want, got,
+                            "op_tres {:?}({}, {}, {}): canonical={} montgomery={}",
+                            op, a, b, c, want, got
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_montgomery_roundtrip_is_identity() {
+        use crate::field::MontgomeryField;
+
+        let ff = ff_bn256();
+        let mont = MontgomeryField::try_new(&ff).unwrap();
+        for v in [
+            U254::from(0u64), U254::from(1u64),
+            bn254_prime - U254::from(1u64),
+            bn254_prime >> 1,
+        ] {
+            assert_eq!(v, mont.from_mont(mont.to_mont(v)));
+        }
     }
 }

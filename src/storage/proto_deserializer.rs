@@ -2,7 +2,12 @@ use std::io::{Cursor, Error, ErrorKind};
 use crate::field::{FieldOperations, FieldOps, U254, U64};
 use crate::graph::{Node, Nodes, NodesInterface, NodesStorage, Operation, TresOperation, UnoOperation, VecNodes};
 use crate::InputSignalsInfo;
-use crate::storage::{deserialize_input_signal_info, read_message, WriteBackReader, WITNESSCALC_GRAPH_MAGIC_002, WITNESSCALC_GRAPH_MAGIC_001};
+use crate::storage::{
+    deserialize_input_signal_info, read_message, WriteBackReader,
+    WITNESSCALC_GRAPH_MAGIC_001, WITNESSCALC_GRAPH_MAGIC_002, WITNESSCALC_GRAPH_MAGIC_003,
+    V3_NODE_RECORD_SIZE, V3_TAG_CONSTANT, V3_TAG_DUO_BASE, V3_TAG_INPUT, V3_TAG_TRES_BASE,
+    V3_TAG_UNO_BASE,
+};
 use crate::vm2::Type;
 
 #[cfg_attr(test, derive(Debug, PartialEq))]
@@ -21,7 +26,10 @@ pub fn deserialize_witnesscalc_graph_from_bytes(
     bytes: &[u8]
 ) -> std::io::Result<(Box<dyn NodesInterface>, Vec<usize>, InputInfo)> {
 
-    let mut idx: usize = if bytes.starts_with(WITNESSCALC_GRAPH_MAGIC_002) {
+    let is_v3 = bytes.starts_with(WITNESSCALC_GRAPH_MAGIC_003);
+    let mut idx: usize = if is_v3 {
+        WITNESSCALC_GRAPH_MAGIC_003.len()
+    } else if bytes.starts_with(WITNESSCALC_GRAPH_MAGIC_002) {
         WITNESSCALC_GRAPH_MAGIC_002.len()
     } else if bytes.starts_with(WITNESSCALC_GRAPH_MAGIC_001) {
         WITNESSCALC_GRAPH_MAGIC_001.len()
@@ -63,10 +71,10 @@ pub fn deserialize_witnesscalc_graph_from_bytes(
             let mut nodes = Nodes::new(
                 prime, curve_name, node_storage);
             for _ in 0..nodes_num {
-                let (msg_len, int_len) = decode_varint_u32(&bytes[idx..])?;
-                idx += int_len;
-                decode_node(&bytes[idx..idx+msg_len as usize], &mut nodes)?;
-                idx += msg_len as usize;
+                idx += load_one_node(is_v3, &bytes[idx..], &mut nodes)?;
+            }
+            if is_v3 {
+                load_v3_constants_table(&bytes[idx..], &mut nodes)?;
             }
             Box::new(nodes)
         }
@@ -75,10 +83,10 @@ pub fn deserialize_witnesscalc_graph_from_bytes(
             let mut nodes = Nodes::new(
                 prime, curve_name, node_storage);
             for _ in 0..nodes_num {
-                let (msg_len, int_len) = decode_varint_u32(&bytes[idx..])?;
-                idx += int_len;
-                decode_node(&bytes[idx..idx+msg_len as usize], &mut nodes)?;
-                idx += msg_len as usize;
+                idx += load_one_node(is_v3, &bytes[idx..], &mut nodes)?;
+            }
+            if is_v3 {
+                load_v3_constants_table(&bytes[idx..], &mut nodes)?;
             }
             Box::new(nodes)
         }
@@ -100,7 +108,7 @@ pub fn deserialize_witnesscalc_graph_from_bytes(
                 (k.clone(), (v.offset as usize, v.len as usize))
             })
             .collect::<InputSignalsInfo>())
-    } else if bytes.starts_with(WITNESSCALC_GRAPH_MAGIC_002) {
+    } else if bytes.starts_with(WITNESSCALC_GRAPH_MAGIC_002) || is_v3 {
         let (input_info, types) = deserialize_input_signal_info(&md.input_signal_info)?;
         InputInfo::V2 { input_info, types }
     } else {
@@ -135,6 +143,84 @@ impl TryFrom<u8> for WireType {
             _ => Err(()),
         }
     }
+}
+
+/// Decodes one node from `bytes` (v3's fixed-width record, or v1/v2's
+/// length-delimited protobuf message) and returns how many bytes it took.
+fn load_one_node<T: FieldOps + 'static, NS: NodesStorage + 'static>(
+    is_v3: bool, bytes: &[u8], nodes: &mut Nodes<T, NS>) -> Result<usize, Error> {
+
+    if is_v3 {
+        decode_node_v3(bytes, nodes)?;
+        Ok(V3_NODE_RECORD_SIZE)
+    } else {
+        let (msg_len, int_len) = decode_varint_u32(bytes)?;
+        decode_node(&bytes[int_len..int_len + msg_len as usize], nodes)?;
+        Ok(int_len + msg_len as usize)
+    }
+}
+
+/// Reads the v3 constants table (`u64` count then `count * T::BYTES`
+/// bytes) that follows the node array, and fills in `nodes.constants` so
+/// the `Node::Constant(i)` records already loaded resolve correctly.
+/// Returns the number of bytes consumed.
+fn load_v3_constants_table<T: FieldOps + 'static, NS: NodesStorage + 'static>(
+    bytes: &[u8], nodes: &mut Nodes<T, NS>) -> Result<usize, Error> {
+
+    if bytes.len() < 8 {
+        return Err(Error::new(ErrorKind::UnexpectedEof, "truncated v3 constants table length"));
+    }
+    let count = u64::from_le_bytes(bytes[0..8].try_into().unwrap()) as usize;
+    let mut pos = 8;
+    let mut constants = Vec::with_capacity(count);
+    for _ in 0..count {
+        if bytes.len() < pos + T::BYTES {
+            return Err(Error::new(ErrorKind::UnexpectedEof, "truncated v3 constants table"));
+        }
+        let v = T::from_le_bytes(&bytes[pos..pos + T::BYTES])
+            .map_err(|e| Error::new(ErrorKind::InvalidData, e.to_string()))?;
+        constants.push(v);
+        pos += T::BYTES;
+    }
+    nodes.constants = constants;
+    Ok(pos)
+}
+
+/// Decodes a v3 fixed-width node record: `[u8 tag][u32 a][u32 b][u32 c]`,
+/// little-endian, unused operand fields zero. See
+/// `storage::write_v3_node_record` for the tag numbering this mirrors.
+fn decode_node_v3<T: FieldOps + 'static, NS: NodesStorage + 'static>(
+    bytes: &[u8], nodes: &mut Nodes<T, NS>) -> Result<(), Error> {
+
+    if bytes.len() < V3_NODE_RECORD_SIZE {
+        return Err(Error::new(ErrorKind::UnexpectedEof, "truncated v3 node record"));
+    }
+    let tag = bytes[0];
+    let a = u32::from_le_bytes(bytes[1..5].try_into().unwrap()) as usize;
+    let b = u32::from_le_bytes(bytes[5..9].try_into().unwrap()) as usize;
+    let c = u32::from_le_bytes(bytes[9..13].try_into().unwrap()) as usize;
+
+    let node = if tag == V3_TAG_INPUT {
+        Node::Input(a)
+    } else if tag == V3_TAG_CONSTANT {
+        Node::Constant(a)
+    } else if tag >= V3_TAG_TRES_BASE {
+        let op = TresOperation::try_from(tag - V3_TAG_TRES_BASE)
+            .map_err(|e| Error::new(ErrorKind::InvalidData, e))?;
+        Node::TresOp(op, a, b, c)
+    } else if tag >= V3_TAG_DUO_BASE {
+        let op = Operation::try_from(tag - V3_TAG_DUO_BASE)
+            .map_err(|e| Error::new(ErrorKind::InvalidData, e))?;
+        Node::Op(op, a, b)
+    } else if tag >= V3_TAG_UNO_BASE {
+        let op = UnoOperation::try_from(tag - V3_TAG_UNO_BASE)
+            .map_err(|e| Error::new(ErrorKind::InvalidData, e))?;
+        Node::UnoOp(op, a)
+    } else {
+        return Err(Error::new(ErrorKind::InvalidData, format!("unknown v3 node tag: {tag}")));
+    };
+    nodes.push_noopt(node);
+    Ok(())
 }
 
 /// Decodes a protobuf Node message into a Node enum
@@ -418,6 +504,7 @@ fn decode_tres_op_node<T: FieldOps + 'static, NS: NodesStorage + 'static>(
             1 => {
                 op = match value {
                     0 => TresOperation::TernCond,
+                    1 => TresOperation::Mla,
                     _ => return Err(Error::new(
                         ErrorKind::InvalidData,
                         format!("Unknown TresOp operation value: {}", value),

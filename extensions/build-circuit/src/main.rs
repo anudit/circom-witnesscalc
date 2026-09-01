@@ -20,7 +20,7 @@ use program_structure::constants::UsefulConstants;
 use circom_witnesscalc::{progress_bar, vm2};
 use circom_witnesscalc::field::{Field, FieldOperations, FieldOps, U254, U64};
 use circom_witnesscalc::graph::{Node, Operation, UnoOperation, TresOperation, Nodes, NodeConstErr, NodeIdx, NodesInterface, optimize, MMapNodes, NodesStorage};
-use circom_witnesscalc::storage::serialize_witnesscalc_graph;
+use circom_witnesscalc::storage::{serialize_witnesscalc_graph, serialize_witnesscalc_graph_v3};
 use compiler::hir::very_concrete_program::{BusInstance, FieldInfo};
 use program_structure::ast::SignalType;
 use circom_witnesscalc::vm2::{TypeField, TypeFieldKind};
@@ -2497,6 +2497,7 @@ struct Args {
     named_temp: bool,
     temp_dir: PathBuf,
     use_old_simplification_heuristics: bool,
+    graph_format_v3: bool,
 }
 
 fn parse_args() -> Args {
@@ -2513,6 +2514,7 @@ fn parse_args() -> Args {
     let mut named_temp: bool = false;
     let mut temp_dir: Option<PathBuf> = None;
     let mut use_old_simplification_heuristics: bool = false;
+    let mut graph_format_v3: bool = false;
 
     let usage = |err_msg: &str| {
         if !err_msg.is_empty() {
@@ -2549,6 +2551,10 @@ fn parse_args() -> Args {
         eprintln!("    --temp-dir              Directory for creating the temporary file with nodes.");
         eprintln!("                            Even for unnamed temporary files, this directory can specify");
         eprintln!("                            the target partition");
+        eprintln!("    --graph-format-v3       Write the graph file in the v3 format: fixed-width node");
+        eprintln!("                            records instead of length-delimited protobuf messages, so");
+        eprintln!("                            calc-witness doesn't need to parse a varint per node field.");
+        eprintln!("                            Opt-in; default output is still the v2 format.");
         let ret_code = if err_msg.is_empty() { 0 } else { 1 };
         std::process::exit(ret_code);
     };
@@ -2626,6 +2632,8 @@ fn parse_args() -> Args {
             use_old_simplification_heuristics = true;
         } else if args[i] == "--named-temp" {
             named_temp = true;
+        } else if args[i] == "--graph-format-v3" {
+            graph_format_v3 = true;
         } else if args[i] == "--temp-dir" {
             i += 1;
             if i >= args.len() {
@@ -2659,6 +2667,7 @@ fn parse_args() -> Args {
         named_temp,
         temp_dir: temp_dir.unwrap_or_else(env::temp_dir),
         use_old_simplification_heuristics,
+        graph_format_v3,
     }
 }
 
@@ -2882,7 +2891,11 @@ fn build_graph<T: FieldOps + 'static>(
         nodes.len(), witness_node_idxes.len());
 
     let f = fs::File::create(&args.graph_file).unwrap();
-    serialize_witnesscalc_graph(f, &nodes, &witness_node_idxes, &input_infos, &types).unwrap();
+    if args.graph_format_v3 {
+        serialize_witnesscalc_graph_v3(f, &nodes, &witness_node_idxes, &input_infos, &types).unwrap();
+    } else {
+        serialize_witnesscalc_graph(f, &nodes, &witness_node_idxes, &input_infos, &types).unwrap();
+    }
 
     println!("circuit graph saved to file: {}", &args.graph_file);
 }

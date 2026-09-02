@@ -16,10 +16,13 @@ parallel_components = []
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-ark-bn254 = { version = "0.5.0", features = ["std"] }
-ark-ff = { version = "0.5.0", features = ["std", "asm"] }
-ark-serialize = { version = "0.5.0", features = ["derive"] }
+ark-bn254 = { version = "0.6.0", features = ["std"] }
+ark-ff = { version = "0.6.0", features = ["std", "asm"] }
+ark-serialize = { version = "0.6.0", features = ["derive"] }
 byteorder = "1.4.3"
+# Held at 0.8: ark-std 0.6 and ruint both pin rand 0.8, so moving this crate
+# alone to 0.10 adds a third copy of rand to the tree rather than removing one.
+# Only used by the graph optimizer's random_eval, never on the witness path.
 rand = "0.8.5"
 ruint = { version = "1.13.1", features = ["rand", "serde", "num-traits"] }
 serde = { version = "1.0.190", features = ["derive"] }
@@ -33,14 +36,15 @@ libc = "0.2.155"
 #parser = { path = "../circom/parser" }
 #type_analysis = { path = "../circom/type_analysis" }
 #constraint_generation = { path = "../circom/constraint_generation" }
-prost = "0.13.1"
-num-bigint = "0.4.6"
+prost = "0.14.4"
+# Held at 0.4 for the same reason: ark-ff 0.6 and ark-circom depend on 0.4.
+num-bigint = "0.4.8"
 num-traits = "0.2.19"
 anyhow = "1.0.97"
-indicatif = "0.17.11"
+indicatif = "0.18.6"
 memmap2 = "0.9.5"
 tempfile = "3.19.1"
-winnow = "0.7.7"
+winnow = "1.0.4"
 thiserror = "2.0.12"
 bitvec = "1.0.1"
 
@@ -55,7 +59,7 @@ crate-type = ["lib", "staticlib", "cdylib"]
 
 [build-dependencies]
 bindgen = "0.72.0"
-prost-build = "0.13.3"
+prost-build = "0.14.4"
 
 [workspace]
 members = ["extensions/build-circuit", "extensions/compiler"]

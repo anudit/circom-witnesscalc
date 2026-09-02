@@ -513,6 +513,12 @@ fn into_input_status(status: &StatusInput) -> InputStatus {
         StatusInput::Last => InputStatus::Last,
         StatusInput::NoLast => InputStatus::NoLast,
         StatusInput::Unknown => InputStatus::Unknown,
+        // A zero-size assignment stores no signals, so it neither decrements
+        // the subcomponent's input counter nor can be the input that completes
+        // it -- which is exactly `NoLast`'s behaviour in the VM (`vm.rs`:
+        // `NoLast => false`). `InputStatus` is a wire-format enum packed into
+        // two flag bits, so it deliberately gets no fourth variant.
+        StatusInput::SizeZero => InputStatus::NoLast,
     }
 }
 
@@ -2085,6 +2091,7 @@ mod tests {
 )
          */
         let inst = Box::new(Instruction::Store(StoreBucket {
+            checks: vec![],
             line: 8,
             message_id: 0,
             context: InstrContext { size: SizeOption::Single(1) },
@@ -2174,6 +2181,7 @@ mod tests {
 		);
          */
         let inst = Box::new(Instruction::Store(StoreBucket {
+            checks: vec![],
             line: 12,
             message_id: 0,
             context: InstrContext { size: SizeOption::Single(1) },
@@ -2198,6 +2206,7 @@ mod tests {
                 op_aux_no: 0,
                 stack: vec![
                     Box::new(Instruction::Load(LoadBucket{
+                        checks: vec![],
                         line: 0,
                         message_id: 0,
                         address_type: AddressType::Variable,
@@ -2214,6 +2223,7 @@ mod tests {
                         context: InstrContext { size: SizeOption::Single(1) },
                     })),
                     Box::new(Instruction::Load(LoadBucket{
+                        checks: vec![],
                         line: 12,
                         message_id: 0,
                         address_type: AddressType::Signal,
@@ -2244,6 +2254,7 @@ mod tests {
                                                 op_aux_no: 0,
                                                 stack: vec![
                                                     Box::new(Instruction::Load(LoadBucket{
+                                                        checks: vec![],
                                                         line: 12,
                                                         message_id: 0,
                                                         address_type: AddressType::Variable,
@@ -2342,6 +2353,7 @@ STORE(
 )
          */
         let inst = Box::new(Instruction::Store(StoreBucket {
+            checks: vec![],
             line: 207,
             message_id: 0,
             context: InstrContext { size: SizeOption::Single(1) },
@@ -2360,6 +2372,7 @@ STORE(
                 template_header: None,
             },
             src: Box::new(Instruction::Load(LoadBucket {
+                checks: vec![],
                 line: 207,
                 message_id: 0,
                 address_type: AddressType::SubcmpSignal {

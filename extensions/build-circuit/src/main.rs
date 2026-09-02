@@ -2976,6 +2976,10 @@ where
             false
         }
         StatusInput::Unknown => sub_cmp.number_of_inputs == 0,
+        // A zero-size assignment: nothing was stored (`src_node_idxs` is empty,
+        // so the decrement above was a no-op) and it can never be the input
+        // that completes the subcomponent, so there is nothing to run.
+        StatusInput::SizeZero => false,
     };
 
     if run_component {
